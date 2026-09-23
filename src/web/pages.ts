@@ -31,6 +31,16 @@ export function loginPage(): string {
 <body>
   <main class="login">
     <section class="card">
+      <h2>本班知识库检索</h2>
+      <p class="muted">检索范围来自服务端登录会话，只返回当前班级材料，并显示来源。</p>
+      <form id="search-form">
+        <input id="search-query" name="query" placeholder="输入要检索的知识" required>
+        <button type="submit">检索</button>
+      </form>
+      <div id="search-message" class="muted"></div>
+      <div id="search-results"></div>
+    </section>
+    <section class="card">
       <h1>CampusClaw</h1>
       <p class="muted">班级教学材料管理系统</p>
       <form id="login-form">
@@ -119,6 +129,16 @@ export function materialsPage(): string {
         : '<tr><td colspan="5" class="muted">本班暂无材料</td></tr>';
     }
     document.getElementById('refresh').addEventListener('click', loadMaterials);
+    document.getElementById('search-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const response = await fetch('/api/knowledge-search', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({query: document.getElementById('search-query').value})});
+      const result = await response.json();
+      const message = document.getElementById('search-message');
+      const results = document.getElementById('search-results');
+      if (!response.ok) { message.textContent = result.error || '检索失败'; results.innerHTML = ''; return; }
+      message.textContent = '检索模式：' + result.retrievalMode;
+      results.innerHTML = result.results.length ? result.results.map(item => '<article><strong><a href="/api/materials/' + encodeURIComponent(item.source.materialId) + '">' + item.source.originalFilename + '</a></strong> · 序号 ' + item.source.sequenceNumber + '<p>' + item.excerpt + '</p><small>entry=' + item.source.knowledgeEntryId + ' · material=' + item.source.materialId + ' · rank=' + item.rank + ' · combined=' + item.scores.combined + '</small></article>').join('') : '<p class="muted">没有找到本班匹配内容。</p>';
+    });
     document.getElementById('upload-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = new FormData();

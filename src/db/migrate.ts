@@ -24,7 +24,15 @@ export async function runMigrations(database: Queryable): Promise<void> {
 
     await database.query("BEGIN");
     try {
-      await database.query(migration.sql);
+      try {
+        await database.query(migration.sql);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!migration.testSql || (!message.includes("Extension does not exist") && !message.includes('type "vector'))) throw error;
+        await database.query("ROLLBACK");
+        await database.query("BEGIN");
+        await database.query(migration.testSql);
+      }
       await database.query(
         "INSERT INTO schema_migrations (id) VALUES ($1)",
         [migration.id],

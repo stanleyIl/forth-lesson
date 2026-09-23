@@ -10,7 +10,10 @@ describe("database migrations", () => {
     const result = await pool.query(
       "SELECT id FROM schema_migrations ORDER BY id",
     );
-    expect(result.rows).toEqual([{ id: "001_initial_schema" }]);
+    expect(result.rows).toEqual([
+      { id: "001_initial_schema" },
+      { id: "002_knowledge_retrieval" },
+    ]);
     await pool.end();
   });
 

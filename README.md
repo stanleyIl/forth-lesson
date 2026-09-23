@@ -14,6 +14,7 @@
 - 材料解析并写入知识库
 - Docker Compose 启动
 - 健康检查接口
+- 限定班级范围的混合知识库检索与来源追溯
 
 ## 本迭代不做
 - RAG 检索问答
@@ -82,7 +83,12 @@ Compose 使用 `database_data` 和 `material_data` 命名卷分别保存 Postgre
 - `GET /api/materials/:materialId`：读取同班材料及关联知识条目
 - `GET /api/knowledge-entries/:entryId`：读取同班知识条目
 - `POST /api/materials`：仅教师可上传 `.txt` 或 `.md`
+- `POST /api/knowledge-search`：教师和学生检索当前班级知识，并返回材料、知识条目、序号和摘录来源
 - `GET /health`：无需登录的服务存活检查
 
 除登录和健康检查外，API 都要求有效会话。班级范围来自服务端会话，
 客户端传入的 `user_id`、`role` 或 `class_id` 不会改变授权结果。
+
+检索使用班级约束下的词法候选与向量候选，并通过 RRF（reciprocal rank fusion）稳定合并；嵌入服务不可用时自动降级为词法检索。向量索引状态保存在 `knowledge_entry_embeddings`，可通过应用启动后的材料上传触发索引，也可以运行 `docker compose exec application node dist/retrieval/backfill.js` 重建。
+
+回滚时可停止检索路由并保留 `knowledge_entry_embeddings` 与索引数据；已有材料和知识条目不需要删除。生产数据库使用 `pgvector/pgvector:pg17` 镜像和原有 `database_data` 命名卷。

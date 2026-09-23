@@ -8,6 +8,7 @@ import type { AppConfig } from "./config.js";
 import {
   KnowledgeEntryRepository,
   MaterialRepository,
+  RetrievalRepository,
   SessionRepository,
   UserRepository,
   type Database,
@@ -29,6 +30,10 @@ import {
 import { verifyPassword } from "./security/passwords.js";
 import { SessionService } from "./security/sessions.js";
 import { loginPage, materialsPage } from "./web/pages.js";
+import { HttpEmbeddingProvider, type EmbeddingProvider } from "./retrieval/provider.js";
+import { RetrievalService } from "./retrieval/service.js";
+import { validateSearchInput } from "./retrieval/validation.js";
+import { EmbeddingIndexer } from "./retrieval/indexer.js";
 
 export type BuildAppOptions = {
   config: AppConfig;
@@ -36,6 +41,7 @@ export type BuildAppOptions = {
   logger?: false | typeof safeLoggerOptions;
   materialStorage?: MaterialStorage;
   materialParser?: MaterialParser;
+  embeddingProvider?: EmbeddingProvider;
 };
 
 const loginSchema = z.object({
@@ -53,6 +59,21 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   );
   const materials = new MaterialRepository(options.database);
   const entries = new KnowledgeEntryRepository(options.database);
+  const retrievalRepository = new RetrievalRepository(options.database);
+  const embeddingProvider = options.embeddingProvider ?? new HttpEmbeddingProvider({
+    endpoint: options.config.embeddingEndpoint ?? "http://127.0.0.1:11434/v1/embeddings",
+    apiKey: options.config.embeddingApiKey,
+    model: options.config.embeddingModel ?? "text-embedding-3-small",
+    timeoutMs: options.config.embeddingTimeoutMs ?? 5000,
+    batchSize: options.config.embeddingBatchSize ?? 32,
+  });
+  const retrieval = new RetrievalService(retrievalRepository, embeddingProvider, {
+    lexicalCandidates: options.config.searchLexicalCandidates ?? 50,
+    vectorCandidates: options.config.searchVectorCandidates ?? 50,
+    rrfK: options.config.searchRrfK ?? 60,
+    excerptLength: options.config.searchExcerptLength ?? 240,
+  });
+  const indexer = new EmbeddingIndexer(entries, retrievalRepository, embeddingProvider);
   const ingestion = new MaterialIngestionService(
     options.database,
     options.materialStorage ??
@@ -189,7 +210,29 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         uploaderUserId: request.sessionIdentity!.userId,
         classId: request.sessionIdentity!.classId,
       });
+      void indexer.index(request.sessionIdentity!.classId).catch((error) => {
+        app.log.warn({ err: error, operation: "embedding-index" }, "embedding index update failed");
+      });
       return reply.status(201).send({ material });
+    },
+  );
+
+  app.post<{ Body: unknown }>(
+    "/api/knowledge-search",
+    { preHandler: authenticateApi },
+    async (request, reply) => {
+      let input: ReturnType<typeof validateSearchInput>;
+      try {
+        input = validateSearchInput(request.body, options.config.searchMaxQueryLength ?? 1000, options.config.searchDefaultLimit ?? 10, options.config.searchMaxLimit ?? 50);
+      } catch {
+        return reply.status(400).send({ error: "Invalid search query" });
+      }
+      try {
+        return await retrieval.search({ classId: request.sessionIdentity!.classId, query: input.query, limit: input.limit });
+      } catch (error) {
+        app.log.error({ err: error, operation: "knowledge-search" }, "retrieval failed");
+        return reply.status(503).send({ error: "Retrieval unavailable" });
+      }
     },
   );
 
@@ -203,6 +246,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       const message =
         error instanceof Error ? error.message : "File exceeds upload size limit";
       return void reply.status(statusCode).send({ error: message });
+    }
+    if (error instanceof Error && error.message.includes("relation") && error.message.includes("knowledge_entry_embeddings")) {
+      return void reply.status(503).send({ error: "Retrieval unavailable" });
     }
     app.log.error({ err: error }, "request failed");
     void reply.status(500).send({ error: "Internal Server Error" });

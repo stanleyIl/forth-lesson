@@ -1,6 +1,7 @@
 export type Migration = {
   id: string;
   sql: string;
+  testSql?: string;
 };
 
 export const migrations: Migration[] = [
@@ -65,6 +66,54 @@ export const migrations: Migration[] = [
       CREATE INDEX materials_class_created_idx ON materials(class_id, created_at);
       CREATE INDEX knowledge_entries_class_material_idx
         ON knowledge_entries(class_id, material_id);
+    `,
+  },
+  {
+    id: "002_knowledge_retrieval",
+    sql: `
+      CREATE EXTENSION IF NOT EXISTS vector;
+      ALTER TABLE knowledge_entries ADD COLUMN IF NOT EXISTS search_document TEXT NOT NULL DEFAULT '';
+      ALTER TABLE knowledge_entries ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED;
+      UPDATE knowledge_entries SET search_document = content WHERE search_document = '';
+      CREATE TABLE IF NOT EXISTS knowledge_entry_embeddings (
+        knowledge_entry_id TEXT PRIMARY KEY REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        model_identity TEXT NOT NULL,
+        embedding vector,
+        embedding_json TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (embedding_json IS NOT NULL OR status <> 'ready')
+      );
+      CREATE INDEX IF NOT EXISTS knowledge_entries_class_search_idx
+        ON knowledge_entries(class_id, search_document);
+      CREATE INDEX IF NOT EXISTS knowledge_entries_search_vector_idx
+        ON knowledge_entries USING GIN(search_vector);
+      CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_class_model_status_idx
+        ON knowledge_entry_embeddings(class_id, model_identity, status);
+      CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_entry_class_idx
+        ON knowledge_entry_embeddings(knowledge_entry_id, class_id);
+    `,
+    testSql: `
+      ALTER TABLE knowledge_entries ADD COLUMN IF NOT EXISTS search_document TEXT NOT NULL DEFAULT '';
+      UPDATE knowledge_entries SET search_document = content WHERE search_document = '';
+      CREATE TABLE IF NOT EXISTS knowledge_entry_embeddings (
+        knowledge_entry_id TEXT PRIMARY KEY REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        model_identity TEXT NOT NULL,
+        embedding_json TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (embedding_json IS NOT NULL OR status <> 'ready')
+      );
+      CREATE INDEX IF NOT EXISTS knowledge_entries_class_search_idx ON knowledge_entries(class_id, search_document);
+      CREATE INDEX IF NOT EXISTS knowledge_entries_search_document_idx ON knowledge_entries(class_id, search_document);
+      CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_class_model_status_idx ON knowledge_entry_embeddings(class_id, model_identity, status);
+      CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_entry_class_idx ON knowledge_entry_embeddings(knowledge_entry_id, class_id);
     `,
   },
 ];

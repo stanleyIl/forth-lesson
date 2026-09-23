@@ -28,6 +28,18 @@ describe("loadConfig", () => {
       sessionCookieSecure: true,
       uploadMaxBytes: 2048,
       materialStorageRoot: "/tmp/campusclaw-materials",
+      embeddingEndpoint: "http://127.0.0.1:11434/v1/embeddings",
+      embeddingApiKey: undefined,
+      embeddingModel: "text-embedding-3-small",
+      embeddingTimeoutMs: 5000,
+      embeddingBatchSize: 32,
+      searchMaxQueryLength: 1000,
+      searchDefaultLimit: 10,
+      searchMaxLimit: 50,
+      searchLexicalCandidates: 50,
+      searchVectorCandidates: 50,
+      searchExcerptLength: 240,
+      searchRrfK: 60,
     });
   });
 

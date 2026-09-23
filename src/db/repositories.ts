@@ -102,6 +102,19 @@ export type KnowledgeEntryRecord = {
   created_at: Date;
 };
 
+export type RetrievalCandidate = {
+  entryId: string;
+  materialId: string;
+  classId: string;
+  filename: string;
+  sequenceNumber: number;
+  excerpt: string;
+  lexicalScore?: number;
+  vectorScore?: number;
+  lexicalRank?: number;
+  vectorRank?: number;
+};
+
 export class MaterialRepository {
   constructor(private readonly database: Database) {}
 
@@ -198,8 +211,8 @@ export class KnowledgeEntryRepository {
     for (const [sequenceNumber, content] of contents.entries()) {
       const result = await this.database.query(
         `INSERT INTO knowledge_entries
-          (id, material_id, class_id, content, sequence_number)
-         VALUES ($1, $2, $3, $4, $5)
+          (id, material_id, class_id, content, search_document, sequence_number)
+         VALUES ($1, $2, $3, $4, $4, $5)
          RETURNING id, material_id, class_id, content, sequence_number, created_at`,
         [randomUUID(), materialId, classId, content, sequenceNumber],
       );
@@ -207,4 +220,105 @@ export class KnowledgeEntryRepository {
     }
     return records;
   }
+
+  async listForIndexing(classId?: string): Promise<KnowledgeEntryRecord[]> {
+    const result = await this.database.query(
+      `SELECT id, material_id, class_id, content, sequence_number, created_at
+       FROM knowledge_entries
+       ${classId ? "WHERE class_id = $1" : ""}
+       ORDER BY created_at, id`,
+      classId ? [classId] : [],
+    );
+    return result.rows as KnowledgeEntryRecord[];
+  }
+
+  async listEmbeddingStates(model: string, classId?: string) {
+    const result = await this.database.query(
+      `SELECT knowledge_entry_id, class_id, model_identity, status
+       FROM knowledge_entry_embeddings
+       WHERE model_identity = $1 ${classId ? "AND class_id = $2" : ""}`,
+      classId ? [model, classId] : [model],
+    );
+    return result.rows as Array<{ knowledge_entry_id: string; class_id: string; model_identity: string; status: string }>;
+  }
+}
+
+export class RetrievalRepository {
+  constructor(private readonly database: Database) {}
+
+  async lexicalCandidates(classId: string, query: string, limit: number): Promise<RetrievalCandidate[]> {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const result = await this.database.query(
+      `SELECT ke.id AS entry_id, ke.material_id, ke.class_id, m.original_filename AS filename,
+              ke.sequence_number, ke.content
+       FROM knowledge_entries ke JOIN materials m ON m.id = ke.material_id AND m.class_id = ke.class_id
+       WHERE ke.class_id = $1 AND lower(ke.content) LIKE $2
+       ORDER BY ke.id
+       LIMIT $3`,
+      [classId, `%${terms.join("%")}%`, limit],
+    );
+    return result.rows.map((row, index) => ({
+      entryId: row.entry_id,
+      materialId: row.material_id,
+      classId: row.class_id,
+      filename: row.filename,
+      sequenceNumber: row.sequence_number,
+      excerpt: String(row.content).slice(0, 1000),
+      lexicalScore: 1 / (index + 1),
+      lexicalRank: index + 1,
+    }));
+  }
+
+  async vectorCandidates(classId: string, embedding: number[], model: string, limit: number): Promise<RetrievalCandidate[]> {
+    const result = await this.database.query(
+      `SELECT e.knowledge_entry_id AS entry_id, e.class_id, e.embedding_json,
+              ke.material_id, ke.sequence_number, ke.content, m.original_filename AS filename
+       FROM knowledge_entry_embeddings e
+       JOIN knowledge_entries ke ON ke.id = e.knowledge_entry_id AND ke.class_id = e.class_id
+       JOIN materials m ON m.id = ke.material_id AND m.class_id = e.class_id
+       WHERE e.class_id = $1 AND e.model_identity = $2 AND e.status = 'ready'`,
+      [classId, model],
+    );
+    return result.rows
+      .map((row) => ({ row, score: cosineSimilarity(embedding, parseEmbedding(row.embedding_json)) }))
+      .filter((item) => Number.isFinite(item.score))
+      .sort((a, b) => b.score - a.score || String(a.row.entry_id).localeCompare(String(b.row.entry_id)))
+      .slice(0, limit)
+      .map((item, index) => ({
+        entryId: item.row.entry_id,
+        materialId: item.row.material_id,
+        classId: item.row.class_id,
+        filename: item.row.filename,
+        sequenceNumber: item.row.sequence_number,
+        excerpt: String(item.row.content).slice(0, 1000),
+        vectorScore: item.score,
+        vectorRank: index + 1,
+      }));
+  }
+
+  async upsertEmbedding(input: { entryId: string; classId: string; model: string; status: "pending" | "ready" | "failed"; embedding?: number[]; errorMessage?: string }): Promise<void> {
+    await this.database.query(
+      `INSERT INTO knowledge_entry_embeddings
+        (knowledge_entry_id, class_id, model_identity, embedding_json, status, error_message, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+       ON CONFLICT (knowledge_entry_id) DO UPDATE SET
+         class_id = EXCLUDED.class_id, model_identity = EXCLUDED.model_identity,
+         embedding_json = EXCLUDED.embedding_json, status = EXCLUDED.status,
+         error_message = EXCLUDED.error_message, updated_at = CURRENT_TIMESTAMP`,
+      [input.entryId, input.classId, input.model, input.embedding ? JSON.stringify(input.embedding) : null, input.status, input.errorMessage ?? null],
+    );
+  }
+}
+
+function parseEmbedding(value: unknown): number[] {
+  try { return Array.isArray(value) ? value : JSON.parse(String(value)); } catch { return []; }
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (!left.length || left.length !== right.length) return Number.NaN;
+  let dot = 0; let leftNorm = 0; let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index]; leftNorm += left[index] ** 2; rightNorm += right[index] ** 2;
+  }
+  return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : Number.NaN;
 }
