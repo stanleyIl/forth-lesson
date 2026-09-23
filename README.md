@@ -22,3 +22,67 @@
 - 用户注册与密码找回
 - SSO
 - 生产级高可用
+
+## 本地启动
+
+要求：
+
+- Docker Desktop（包含 Docker Compose）
+- 一个不少于 32 个字符的私密 `SESSION_SECRET`
+
+```bash
+cp .env.example .env
+# 编辑 .env，替换 SESSION_SECRET 和示例账户密码
+docker compose up --build --wait
+```
+
+应用地址：
+
+- 登录页：`http://localhost:3000/login`
+- 教师/学生材料页：`http://localhost:3000/app/materials`
+- 健康检查：`http://localhost:3000/health`
+
+首次启动后，可创建作业演示账号：
+
+```bash
+docker compose run --rm \
+  -e SEED_TEACHER_PASSWORD="$SEED_TEACHER_PASSWORD" \
+  -e SEED_STUDENT_PASSWORD="$SEED_STUDENT_PASSWORD" \
+  application node dist/db/seed.js
+```
+
+默认创建：
+
+- `teacher-a`：教师，属于 `class-a`
+- `student-b`：学生，属于 `class-b`
+
+密码由上述环境变量提供，并且只以自适应加盐哈希形式写入数据库。
+
+## 运行时配置
+
+| 变量 | 必需 | 说明 |
+| --- | --- | --- |
+| `DATABASE_URL` | 是（容器内已接线） | PostgreSQL 连接地址 |
+| `SESSION_SECRET` | 是 | 会话 HMAC 密钥，至少 32 字符；缺失时拒绝启动 |
+| `SESSION_TTL_SECONDS` | 否 | 会话有效期，默认 86400 秒 |
+| `SESSION_COOKIE_NAME` | 否 | 会话 Cookie 名称 |
+| `HTTPS_ENABLED` | 否 | HTTPS 环境中设为 `true`，启用 Secure Cookie |
+| `UPLOAD_MAX_BYTES` | 否 | 上传大小限制，默认 1 MiB |
+| `MATERIAL_STORAGE_ROOT` | 是（容器内已接线） | 持久化材料目录 |
+| `HOST` / `PORT` | 否 | HTTP 监听地址和端口 |
+
+Compose 使用 `database_data` 和 `material_data` 命名卷分别保存 PostgreSQL
+数据和上传文件。重新创建应用容器不会删除这些卷。
+
+## API 摘要
+
+- `POST /api/login`：账号密码登录并设置 HttpOnly 会话 Cookie
+- `GET /api/session`：读取服务端识别出的当前 `user_id`、`role`、`class_id`
+- `GET /api/materials`：只列出当前会话班级的材料
+- `GET /api/materials/:materialId`：读取同班材料及关联知识条目
+- `GET /api/knowledge-entries/:entryId`：读取同班知识条目
+- `POST /api/materials`：仅教师可上传 `.txt` 或 `.md`
+- `GET /health`：无需登录的服务存活检查
+
+除登录和健康检查外，API 都要求有效会话。班级范围来自服务端会话，
+客户端传入的 `user_id`、`role` 或 `class_id` 不会改变授权结果。

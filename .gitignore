@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.cache/
+.env
+.DS_Store
+evidence/
+coverage/
+local_data/
+local_runs/
