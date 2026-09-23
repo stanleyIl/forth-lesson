@@ -88,4 +88,17 @@ describe("database migrations", () => {
     ).rejects.toThrow();
     await pool.end();
   });
+
+  it("cascades embedding records when a material is deleted", async () => {
+    const pool = await createTestDatabase();
+    await pool.query("INSERT INTO classes (id, name) VALUES ('a', 'Class A')");
+    await pool.query("INSERT INTO users (id, account_identifier, password_hash, role, class_id) VALUES ('teacher-a', 'teacher-a', 'hash', 'teacher', 'a')");
+    await pool.query("INSERT INTO materials (id, uploader_user_id, class_id, original_filename, storage_key, file_type, size_bytes) VALUES ('material-a', 'teacher-a', 'a', 'lesson.txt', 'stored-a', 'txt', 10)");
+    await pool.query("INSERT INTO knowledge_entries (id, material_id, class_id, content, search_document, sequence_number) VALUES ('entry-a', 'material-a', 'a', 'content', 'content', 0)");
+    await pool.query("INSERT INTO knowledge_entry_embeddings (knowledge_entry_id, class_id, model_identity, embedding_json, status) VALUES ('entry-a', 'a', 'test', '[1]', 'ready')");
+    await pool.query("DELETE FROM materials WHERE id = 'material-a' AND class_id = 'a'");
+    expect((await pool.query("SELECT * FROM knowledge_entries")).rows).toEqual([]);
+    expect((await pool.query("SELECT * FROM knowledge_entry_embeddings")).rows).toEqual([]);
+    await pool.end();
+  });
 });

@@ -9,7 +9,7 @@
 ## 2. pgvector Schema and Compose Migration
 
 - [x] 2.1 Add a versioned migration that enables the PostgreSQL `vector` extension, adds lexical search support for `knowledge_entries`, and creates `knowledge_entry_embeddings` with entry/class relationships, model identity, vector/index state, error metadata, timestamps, and cascade deletion; verify the migration applies to an existing iteration-1 schema without losing materials or knowledge entries
-- [ ] 2.2 Add class/model/status indexes and a GIN full-text index that support bounded class-scoped retrieval and backfill scans; verify PostgreSQL query plans and schema inspection show the expected indexes and every embedding row remains tied to the same class as its knowledge entry
+- [x] 2.2 Add class/model/status indexes and a GIN full-text index that support bounded class-scoped retrieval and backfill scans; verify PostgreSQL query plans and schema inspection show the expected indexes and every embedding row remains tied to the same class as its knowledge entry
 - [x] 2.3 Replace the Compose database image with a PostgreSQL 17 pgvector-capable image while retaining the existing `database_data` volume; verify Compose starts healthy against a copied existing volume and `SELECT extversion FROM pg_extension WHERE extname = 'vector'` succeeds
 - [x] 2.4 Add rollback documentation for disabling retrieval and retaining or explicitly removing additive vector/index data; verify the documented rollback does not require deleting uploaded files or existing material records
 
@@ -18,8 +18,8 @@
 - [x] 3.1 Implement the server-side embedding-provider adapter with document batching, query embedding, model identity, optional authorization, timeout handling, response validation, and vector-dimension consistency checks; verify unit tests cover success, provider error, timeout, malformed response, credential redaction, and mixed dimensions
 - [x] 3.2 Implement idempotent embedding persistence keyed by knowledge-entry ID, including pending, ready, and failed states and current-model replacement; verify repository tests prove retry does not duplicate rows, stale models are replaced, and fabricated vectors are never stored on failure
 - [x] 3.3 Mark newly committed knowledge entries pending and trigger best-effort post-commit indexing without changing material-ingestion atomicity; verify upload tests prove lexical availability survives provider failure and failed vector indexing does not roll back the valid material or file
-- [ ] 3.4 Add a bounded backfill command that indexes missing, failed, and stale-model entries in batches and reports processed/ready/failed/skipped counts; verify repeated runs are idempotent and a failed entry can succeed on a later retry
-- [ ] 3.5 Ensure material deletion cascades through knowledge entries and vector/index records; verify an integration test deletes a material and finds no stale lexical candidate, vector candidate, or embedding row
+- [x] 3.4 Add a bounded backfill command that indexes missing, failed, and stale-model entries in batches and reports processed/ready/failed/skipped counts; verify repeated runs are idempotent and a failed entry can succeed on a later retry
+- [x] 3.5 Ensure material deletion cascades through knowledge entries and vector/index records; verify an integration test deletes a material and finds no stale lexical candidate, vector candidate, or embedding row
 
 ## 4. Class-Scoped Lexical and Vector Retrieval
 
@@ -39,19 +39,19 @@
 
 ## 6. Security and Adversarial Verification
 
-- [ ] 6.1 Add adversarial tests that place exact textual and semantic matches in another class and attempt body, query, route, header, material-ID, and entry-ID overrides; verify no response, rank, score, excerpt, timing-visible source load, or log discloses class-B data to class A
-- [ ] 6.2 Add tests for teacher and student permissions proving both roles may search their own class while neither may search another class; verify unsupported roles receive HTTP 403 for the protected retrieval operation
-- [ ] 6.3 Add logging and response audits proving embedding credentials, vectors, full queries, full knowledge content, SQL errors, and cross-class metadata are absent; verify only bounded excerpts and documented score/source fields leave the service
+- [x] 6.1 Add adversarial tests that place exact textual and semantic matches in another class and attempt body, query, route, header, material-ID, and entry-ID overrides; verify no response, rank, score, excerpt, timing-visible source load, or log discloses class-B data to class A
+- [x] 6.2 Add tests for teacher and student permissions proving both roles may search their own class while neither may search another class; verify unsupported roles receive HTTP 403 for the protected retrieval operation
+- [x] 6.3 Add logging and response audits proving embedding credentials, vectors, full queries, full knowledge content, SQL errors, and cross-class metadata are absent; verify only bounded excerpts and documented score/source fields leave the service
 
 ## 7. Container, Backfill, and Persistence Verification
 
 - [x] 7.1 Document all retrieval and embedding environment variables in `.env.example` and README without a real credential; verify valid documented configuration starts and malformed retrieval bounds fail before traffic is accepted
-- [ ] 7.2 Run Compose with the pgvector database, upload a material, confirm immediate lexical search, run backfill, and confirm hybrid search with correct provenance; retain request/response and database evidence for each transition
-- [ ] 7.3 Recreate the application and database containers without deleting named volumes and verify materials, knowledge entries, embeddings, index states, and hybrid results remain available
-- [ ] 7.4 Simulate embedding-provider outage in Compose and verify uploads remain valid, backfill records retryable failures, and search reports lexical fallback without cross-class leakage
+- [x] 7.2 Run Compose with the pgvector database, upload a material, confirm immediate lexical search, run backfill, and confirm hybrid search with correct provenance; retain request/response and database evidence for each transition
+- [x] 7.3 Recreate the application and database containers without deleting named volumes and verify materials, knowledge entries, embeddings, index states, and hybrid results remain available
+- [x] 7.4 Simulate embedding-provider outage in Compose and verify uploads remain valid, backfill records retryable failures, and search reports lexical fallback without cross-class leakage
 
 ## 8. Acceptance and Scope Review
 
-- [ ] 8.1 Map every scenario in `class-scoped-knowledge-retrieval` to an automated test or documented container verification and verify each scenario has an explicit passing evidence reference
-- [ ] 8.2 Run the complete build, unit, integration, migration, security, pgvector, backfill, browser, and Compose acceptance checks; verify all checks pass and retain command output before marking implementation tasks complete
+- [x] 8.1 Map every scenario in `class-scoped-knowledge-retrieval` to an automated test or documented container verification and verify each scenario has an explicit passing evidence reference
+- [x] 8.2 Run the complete build, unit, integration, migration, security, pgvector, backfill, browser, and Compose acceptance checks; verify all checks pass and retain command output before marking implementation tasks complete
 - [x] 8.3 Review the implementation against the declared non-goals and security boundaries; verify no RAG answer generation, AI conversation, cross-class/global search, unsupported media ingestion, client-side authorization, or exposed provider secret was introduced

@@ -221,7 +221,7 @@ export class KnowledgeEntryRepository {
     return records;
   }
 
-  async listForIndexing(classId?: string): Promise<KnowledgeEntryRecord[]> {
+  async listForIndexing(classId?: string, model?: string): Promise<KnowledgeEntryRecord[]> {
     const result = await this.database.query(
       `SELECT id, material_id, class_id, content, sequence_number, created_at
        FROM knowledge_entries
@@ -229,7 +229,19 @@ export class KnowledgeEntryRepository {
        ORDER BY created_at, id`,
       classId ? [classId] : [],
     );
-    return result.rows as KnowledgeEntryRecord[];
+    const records = result.rows as KnowledgeEntryRecord[];
+    if (!model || records.length === 0) return records;
+    const states = await this.listEmbeddingStates(model, classId);
+    const ready = new Set(states.filter((state) => state.status === "ready").map((state) => state.knowledge_entry_id));
+    return records.filter((record) => !ready.has(record.id));
+  }
+
+  async deleteForClass(entryId: string, classId: string): Promise<boolean> {
+    const result = await this.database.query(
+      "DELETE FROM knowledge_entries WHERE id = $1 AND class_id = $2",
+      [entryId, classId],
+    );
+    return Boolean(result.rowCount);
   }
 
   async listEmbeddingStates(model: string, classId?: string) {

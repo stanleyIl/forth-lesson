@@ -97,7 +97,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     limits: { files: 1, fileSize: options.config.uploadMaxBytes },
   });
 
-  app.get("/", async () => ({ service: "campusclaw" }));
+  app.get("/", async (_request, reply) => reply.redirect("/login"));
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/login", async (_request, reply) =>
     reply.type("text/html").send(loginPage()),

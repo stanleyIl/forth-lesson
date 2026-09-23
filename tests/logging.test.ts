@@ -21,6 +21,9 @@ describe("safe logging", () => {
         sessionId: "opaque-session-id",
         sessionSecret: "server-session-secret",
         content: "private uploaded lesson",
+        query: "full private search query",
+        excerpt: "private excerpt",
+        vector: [0.1, 0.2],
         req: {
           method: "POST",
           url: "/materials",
@@ -46,6 +49,9 @@ describe("safe logging", () => {
       "private uploaded lesson",
       "secret-cookie",
       "secret-token",
+      "full private search query",
+      "private excerpt",
+      "0.1",
     ]) {
       expect(captured).not.toContain(sensitiveValue);
     }

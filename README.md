@@ -39,7 +39,7 @@ docker compose up --build --wait
 
 应用地址：
 
-- 登录页：`http://localhost:3000/login`
+- 首页/登录页：`http://localhost:3000/` 或 `http://localhost:3000/login`
 - 教师/学生材料页：`http://localhost:3000/app/materials`
 - 健康检查：`http://localhost:3000/health`
 
