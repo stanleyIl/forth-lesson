@@ -145,7 +145,11 @@ describe("authentication and class authorization", () => {
     expect(protectedPage.statusCode).toBe(302);
     expect(protectedPage.headers.location).toBe("/login");
     expect(protectedPage.body).not.toContain("<title>Materials</title>");
-    expect((await app.inject({ url: "/login" })).statusCode).toBe(200);
+    const login = await app.inject({ url: "/login" });
+    expect(login.statusCode).toBe(200);
+    expect(login.body).not.toContain("search-form");
+    const materials = await app.inject({ url: "/app/materials", headers: { cookie: teacherCookie } });
+    expect(materials.body).toContain("search-form");
   });
 
   it("ignores forged identity, role, and class claims", async () => {

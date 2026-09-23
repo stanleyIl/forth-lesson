@@ -31,16 +31,6 @@ export function loginPage(): string {
 <body>
   <main class="login">
     <section class="card">
-      <h2>本班知识库检索</h2>
-      <p class="muted">检索范围来自服务端登录会话，只返回当前班级材料，并显示来源。</p>
-      <form id="search-form">
-        <input id="search-query" name="query" placeholder="输入要检索的知识" required>
-        <button type="submit">检索</button>
-      </form>
-      <div id="search-message" class="muted"></div>
-      <div id="search-results"></div>
-    </section>
-    <section class="card">
       <h1>CampusClaw</h1>
       <p class="muted">班级教学材料管理系统</p>
       <form id="login-form">
@@ -92,6 +82,16 @@ export function materialsPage(): string {
         <div class="muted">身份来自服务端 session，不采用请求中的 user_id、role 或 class_id。</div>
       </div>
       <span class="badge">已登录</span>
+    </section>
+    <section class="card">
+      <h2>本班知识库检索</h2>
+      <p class="muted">检索范围来自服务端登录会话，只返回当前班级材料，并显示来源。</p>
+      <form id="search-form">
+        <input id="search-query" name="query" placeholder="输入要检索的知识" required>
+        <button type="submit">检索</button>
+      </form>
+      <div id="search-message" class="muted"></div>
+      <div id="search-results"></div>
     </section>
     <section class="card">
       <h2>上传教学材料</h2>
