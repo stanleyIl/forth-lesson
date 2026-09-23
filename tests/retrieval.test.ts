@@ -63,3 +63,13 @@ describe("class isolation", () => {
     await pool.end();
   });
 });
+
+describe("vector persistence validation", () => {
+  it("rejects empty and non-finite vectors before database writes", async () => {
+    let queries = 0;
+    const repository = new RetrievalRepository({ query: async () => { queries += 1; return { rows: [], rowCount: 0 } as never; } });
+    await expect(repository.upsertEmbedding({ entryId: "e", classId: "a", model: "m", status: "ready", embedding: [] })).rejects.toThrow(/finite/);
+    await expect(repository.upsertEmbedding({ entryId: "e", classId: "a", model: "m", status: "ready", embedding: [Number.NaN] })).rejects.toThrow(/finite/);
+    expect(queries).toBe(0);
+  });
+});

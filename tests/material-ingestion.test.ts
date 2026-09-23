@@ -344,6 +344,7 @@ describe("teacher upload API", () => {
       headers: { ...upload.headers, cookie: teacherCookie },
     });
     expect(response.statusCode).toBe(201);
+    expect(response.body).not.toContain("storage_key");
     const records = await pool.query(
       `SELECT m.class_id, k.class_id AS entry_class_id, k.content
        FROM materials m JOIN knowledge_entries k ON k.material_id = m.id`,

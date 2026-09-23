@@ -36,4 +36,11 @@ export class SessionService {
     }
     return this.repository.findValidIdentity(this.hash(token), new Date());
   }
+
+  async revoke(token: string | undefined): Promise<boolean> {
+    if (!token || !/^[A-Za-z0-9_-]{40,}$/.test(token)) {
+      return false;
+    }
+    return this.repository.deleteByIdHash(this.hash(token));
+  }
 }

@@ -29,7 +29,7 @@ import {
 } from "./materials/storage.js";
 import { verifyPassword } from "./security/passwords.js";
 import { SessionService } from "./security/sessions.js";
-import { loginPage, materialsPage } from "./web/pages.js";
+import { loginPage, materialDetailPage, materialsPage } from "./web/pages.js";
 import { HttpEmbeddingProvider, type EmbeddingProvider } from "./retrieval/provider.js";
 import { RetrievalService } from "./retrieval/service.js";
 import { validateSearchInput } from "./retrieval/validation.js";
@@ -48,6 +48,14 @@ const loginSchema = z.object({
   accountIdentifier: z.string().min(1),
   password: z.string().min(1),
 });
+
+const dummyPasswordHash =
+  "scrypt$16384$8$1$4gvbp8hZpErdxQS9Xv_isA$c4odnhI4PReTa6zRVSEihJOiw38Bd8hqGgUfqrYCIUo";
+
+function publicMaterial(material: Awaited<ReturnType<MaterialRepository["findById"]>> extends infer T ? Exclude<T, null> : never) {
+  const { storage_key: _storageKey, ...publicRecord } = material;
+  return publicRecord;
+}
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const app = Fastify({ logger: options.logger ?? safeLoggerOptions });
@@ -74,10 +82,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     excerptLength: options.config.searchExcerptLength ?? 240,
   });
   const indexer = new EmbeddingIndexer(entries, retrievalRepository, embeddingProvider);
+  const materialStorage = options.materialStorage ??
+    new FileMaterialStorage(options.config.materialStorageRoot);
   const ingestion = new MaterialIngestionService(
     options.database,
-    options.materialStorage ??
-      new FileMaterialStorage(options.config.materialStorageRoot),
+    materialStorage,
     options.materialParser ?? parseMaterialText,
     options.config.uploadMaxBytes,
   );
@@ -109,10 +118,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
     const user = await users.findByAccount(parsed.data.accountIdentifier);
-    if (
-      !user ||
-      !(await verifyPassword(user.password_hash, parsed.data.password))
-    ) {
+    const passwordMatches = await verifyPassword(
+      user?.password_hash ?? dummyPasswordHash,
+      parsed.data.password,
+    );
+    if (!user || !passwordMatches) {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
@@ -140,17 +150,47 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       reply.type("text/html").send(materialsPage()),
   );
 
+  app.get<{ Params: { materialId: string } }>(
+    "/app/materials/:materialId",
+    { preHandler: authenticateBrowser },
+    async (request, reply) => {
+      const material = await materials.findById(request.params.materialId);
+      if (!material || material.class_id !== request.sessionIdentity!.classId) {
+        return reply.status(404).type("text/html").send("<!doctype html><title>Not Found</title><h1>Not Found</h1>");
+      }
+      const knowledgeEntries = await entries.listForMaterial(material.id, request.sessionIdentity!.classId);
+      return reply.type("text/html").send(materialDetailPage(material, knowledgeEntries));
+    },
+  );
+
+  app.get(
+    "/api/me",
+    { preHandler: authenticateApi },
+    async (request) => ({ user: request.sessionIdentity }),
+  );
+
   app.get(
     "/api/session",
     { preHandler: authenticateApi },
     async (request) => ({ user: request.sessionIdentity }),
   );
 
+  app.post("/api/logout", async (request, reply) => {
+    await sessions.revoke(request.cookies[options.config.sessionCookieName]);
+    reply.clearCookie(options.config.sessionCookieName, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: options.config.sessionCookieSecure,
+      path: "/",
+    });
+    return reply.send({ ok: true });
+  });
+
   app.get(
     "/api/materials",
     { preHandler: authenticateApi },
     async (request) => ({
-      materials: await materials.listForClass(request.sessionIdentity!.classId),
+      materials: (await materials.listForClass(request.sessionIdentity!.classId)).map(publicMaterial),
     }),
   );
 
@@ -158,15 +198,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     "/api/materials/:materialId",
     { preHandler: authenticateApi },
     async (request, reply) => {
-      const material = await materials.findForClass(
-        request.params.materialId,
-        request.sessionIdentity!.classId,
-      );
-      if (!material) {
+      const material = await materials.findById(request.params.materialId);
+      if (!material || material.class_id !== request.sessionIdentity!.classId) {
         return reply.status(404).send({ error: "Not Found" });
       }
       return {
-        material,
+        material: publicMaterial(material),
         knowledgeEntries: await entries.listForMaterial(
           material.id,
           request.sessionIdentity!.classId,
@@ -175,15 +212,38 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     },
   );
 
+  app.get<{ Params: { materialId: string } }>(
+    "/api/materials/:materialId/file",
+    { preHandler: authenticateApi },
+    async (request, reply) => {
+      const material = await materials.findById(request.params.materialId);
+      if (!material || material.class_id !== request.sessionIdentity!.classId) {
+        return reply.status(404).send({ error: "Not Found" });
+      }
+      try {
+        const bytes = await materialStorage.read(material.storage_key);
+        const fallbackFilename = material.file_type === "md" ? "material.md" : "material.txt";
+        const safeFilename = material.original_filename.replace(/[\r\n"]/g, "_") || fallbackFilename;
+        return reply
+          .type(material.file_type === "md" ? "text/markdown; charset=utf-8" : "text/plain; charset=utf-8")
+          .header("content-disposition", `attachment; filename="${fallbackFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`)
+          .send(bytes);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return reply.status(404).send({ error: "Not Found" });
+        }
+        app.log.error({ err: error, operation: "material-download" }, "material download failed");
+        return reply.status(503).send({ error: "Material unavailable" });
+      }
+    },
+  );
+
   app.get<{ Params: { entryId: string } }>(
     "/api/knowledge-entries/:entryId",
     { preHandler: authenticateApi },
     async (request, reply) => {
-      const entry = await entries.findForClass(
-        request.params.entryId,
-        request.sessionIdentity!.classId,
-      );
-      if (!entry) {
+      const entry = await entries.findById(request.params.entryId);
+      if (!entry || entry.class_id !== request.sessionIdentity!.classId) {
         return reply.status(404).send({ error: "Not Found" });
       }
       return { knowledgeEntry: entry };
@@ -213,7 +273,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       void indexer.index(request.sessionIdentity!.classId).catch((error) => {
         app.log.warn({ err: error, operation: "embedding-index" }, "embedding index update failed");
       });
-      return reply.status(201).send({ material });
+      return reply.status(201).send({ material: publicMaterial(material) });
     },
   );
 

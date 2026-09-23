@@ -100,6 +100,22 @@ describe("authentication and class authorization", () => {
     );
   });
 
+  it("restores trusted identity through /api/me", async () => {
+    const teacher = await app.inject({ url: "/api/me", headers: { cookie: teacherCookie } });
+    const student = await app.inject({ url: "/api/me", headers: { cookie: studentCookie } });
+    expect(teacher.statusCode).toBe(200);
+    expect(teacher.json().user).toMatchObject({ role: "teacher", classId: "class-a" });
+    expect(student.json().user).toMatchObject({ role: "student", classId: "class-b" });
+    expect((await app.inject({ url: "/api/me" })).statusCode).toBe(401);
+  });
+
+  it("revokes the server-side session on logout", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/logout", headers: { cookie: teacherCookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toContain("campusclaw_session=");
+    expect((await app.inject({ url: "/api/me", headers: { cookie: teacherCookie } })).statusCode).toBe(401);
+  });
+
   it.each([
     ["unknown account", "missing", "teacher-password"],
     ["wrong password", "teacher-a", "wrong-password"],
@@ -173,6 +189,8 @@ describe("authentication and class authorization", () => {
     });
     expect(teacherList.statusCode).toBe(200);
     expect(teacherList.json().materials).toHaveLength(1);
+    expect(teacherList.body).not.toContain("storage_key");
+    expect(teacherList.body).not.toContain("stored-lesson");
 
     const studentList = await app.inject({
       url: "/api/materials?class_id=class-a",

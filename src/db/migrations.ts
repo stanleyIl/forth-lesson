@@ -103,6 +103,7 @@ export const migrations: Migration[] = [
         knowledge_entry_id TEXT PRIMARY KEY REFERENCES knowledge_entries(id) ON DELETE CASCADE,
         class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
         model_identity TEXT NOT NULL,
+        embedding TEXT,
         embedding_json TEXT,
         status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
         error_message TEXT,
@@ -114,6 +115,22 @@ export const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS knowledge_entries_search_document_idx ON knowledge_entries(class_id, search_document);
       CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_class_model_status_idx ON knowledge_entry_embeddings(class_id, model_identity, status);
       CREATE INDEX IF NOT EXISTS knowledge_entry_embeddings_entry_class_idx ON knowledge_entry_embeddings(knowledge_entry_id, class_id);
+    `,
+  },
+  {
+    id: "003_database_native_retrieval",
+    sql: `
+      UPDATE knowledge_entry_embeddings
+      SET embedding = embedding_json::vector
+      WHERE status = 'ready' AND embedding IS NULL AND embedding_json IS NOT NULL;
+      ALTER TABLE knowledge_entry_embeddings
+        ADD CONSTRAINT knowledge_entry_embeddings_ready_vector_check
+        CHECK (status <> 'ready' OR embedding IS NOT NULL);
+    `,
+    testSql: `
+      UPDATE knowledge_entry_embeddings
+      SET embedding = embedding_json
+      WHERE status = 'ready' AND embedding IS NULL AND embedding_json IS NOT NULL;
     `,
   },
 ];
