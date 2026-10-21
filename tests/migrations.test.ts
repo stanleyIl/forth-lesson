@@ -14,6 +14,7 @@ describe("database migrations", () => {
       { id: "001_initial_schema" },
       { id: "002_knowledge_retrieval" },
       { id: "003_database_native_retrieval" },
+      { id: "004_jwt_chunks_assistant" },
     ]);
     await pool.end();
   });

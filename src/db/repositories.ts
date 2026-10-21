@@ -90,6 +90,39 @@ export class SessionRepository {
   }
 }
 
+export class AccessTokenSessionRepository {
+  constructor(private readonly database: Database) {}
+
+  async create(input: { jtiHash: string; userId: string; expiresAt: Date }): Promise<void> {
+    await this.database.query(
+      `INSERT INTO access_token_sessions (jti_hash, user_id, expires_at)
+       VALUES ($1, $2, $3)`,
+      [input.jtiHash, input.userId, input.expiresAt],
+    );
+  }
+
+  async findValidIdentity(jtiHash: string, now: Date): Promise<SessionIdentity | null> {
+    const result = await this.database.query(
+      `SELECT u.id AS user_id, u.role, u.class_id
+       FROM access_token_sessions t
+       JOIN users u ON u.id = t.user_id
+       WHERE t.jti_hash = $1 AND t.expires_at > $2 AND t.revoked_at IS NULL`,
+      [jtiHash, now],
+    );
+    const row = result.rows[0] as { user_id: string; role: Role; class_id: string } | undefined;
+    return row ? { userId: row.user_id, role: row.role, classId: row.class_id } : null;
+  }
+
+  async revoke(jtiHash: string): Promise<boolean> {
+    const result = await this.database.query(
+      `UPDATE access_token_sessions SET revoked_at = CURRENT_TIMESTAMP
+       WHERE jti_hash = $1 AND revoked_at IS NULL`,
+      [jtiHash],
+    );
+    return Boolean(result.rowCount);
+  }
+}
+
 export type MaterialRecord = {
   id: string;
   uploader_user_id: string;

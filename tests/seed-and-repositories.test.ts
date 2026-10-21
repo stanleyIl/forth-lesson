@@ -70,11 +70,12 @@ describe("bootstrap and class-scoped repositories", () => {
     await new MaterialRepository(pool).create({ id: "uploaded", uploaderUserId: teacher.rows[0].id, classId: "class-a", originalFilename: "uploaded.md", storageKey: "uploaded.md", fileType: "md", sizeBytes: 1 });
     await seedCourseData(pool, root);
     expect((await pool.query("SELECT id FROM materials ORDER BY id")).rows).toEqual([
-      { id: "seed-material-class-a" }, { id: "seed-material-class-b" }, { id: "uploaded" },
+      { id: "seed-material-class-a" }, { id: "seed-material-class-a-science" }, { id: "seed-material-class-b" }, { id: "uploaded" },
     ]);
     const entries = await pool.query("SELECT class_id, content FROM knowledge_entries WHERE id LIKE 'seed-entry-%' ORDER BY class_id");
     expect(entries.rows[0].content).toContain("Class A");
-    expect(entries.rows[1].content).toContain("Class B");
+    expect(entries.rows.some((row) => row.content.includes("Class B"))).toBe(true);
+    expect(entries.rows.some((row) => row.content.includes("磁铁"))).toBe(true);
     await pool.end(); await rm(root, { recursive: true, force: true });
   });
 

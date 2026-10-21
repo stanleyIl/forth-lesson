@@ -13,6 +13,7 @@ const validEnvironment: NodeJS.ProcessEnv = {
   HTTPS_ENABLED: "true",
   UPLOAD_MAX_BYTES: "2048",
   MATERIAL_STORAGE_ROOT: "/tmp/campusclaw-materials",
+  JWT_SECRET: "a-secure-jwt-secret-with-at-least-32-chars",
 };
 
 describe("loadConfig", () => {
@@ -40,6 +41,21 @@ describe("loadConfig", () => {
       searchVectorCandidates: 50,
       searchExcerptLength: 240,
       searchRrfK: 60,
+      jwtSecret: validEnvironment.JWT_SECRET,
+      jwtIssuer: "campusclaw",
+      jwtAudience: "campusclaw-browser",
+      jwtTtlSeconds: 3600,
+      chatEndpoint: "http://127.0.0.1:11434/v1/chat/completions",
+      chatApiKey: undefined,
+      chatModel: "campusclaw-chat",
+      chatTimeoutMs: 30000,
+      chatMaxTokens: 600,
+      askMaxQuestionLength: 2000,
+      conversationHistoryMessages: 12,
+      conversationHistoryChars: 12000,
+      chunkMaxChars: 800,
+      chunkOverlapChars: 80,
+      vectorSimilarityThreshold: 0.35,
     });
   });
 
@@ -49,6 +65,7 @@ describe("loadConfig", () => {
     ["invalid upload limit", { UPLOAD_MAX_BYTES: "zero" }],
     ["invalid HTTPS flag", { HTTPS_ENABLED: "sometimes" }],
     ["short session secret", { SESSION_SECRET: "too-short" }],
+    ["short JWT secret", { JWT_SECRET: "too-short" }],
   ])("rejects %s", (_description, overrides) => {
     expect(() => loadConfig({ ...validEnvironment, ...overrides })).toThrow(
       ConfigurationError,

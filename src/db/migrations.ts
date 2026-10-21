@@ -133,4 +133,133 @@ export const migrations: Migration[] = [
       WHERE status = 'ready' AND embedding IS NULL AND embedding_json IS NOT NULL;
     `,
   },
+  {
+    id: "004_jwt_chunks_assistant",
+    sql: `
+      CREATE TABLE access_token_sessions (
+        jti_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX access_token_sessions_user_idx ON access_token_sessions(user_id);
+      CREATE INDEX access_token_sessions_expiry_idx ON access_token_sessions(expires_at);
+
+      CREATE TABLE knowledge_chunks (
+        id TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        knowledge_entry_id TEXT NOT NULL REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+        material_id TEXT NOT NULL,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        strategy TEXT NOT NULL CHECK (strategy IN ('auto', 'separator', 'markdown_heading')),
+        chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+        chunk_text TEXT NOT NULL CHECK (length(trim(chunk_text)) > 0),
+        search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', chunk_text)) STORED,
+        start_offset INTEGER NOT NULL CHECK (start_offset >= 0),
+        end_offset INTEGER NOT NULL CHECK (end_offset > start_offset),
+        index_status TEXT NOT NULL CHECK (index_status IN ('pending', 'ready', 'failed')),
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (material_id, class_id) REFERENCES materials(id, class_id) ON DELETE CASCADE,
+        UNIQUE (knowledge_entry_id, generation_id, chunk_index)
+      );
+      CREATE INDEX knowledge_chunks_class_status_idx ON knowledge_chunks(class_id, index_status);
+      CREATE INDEX knowledge_chunks_material_generation_idx ON knowledge_chunks(material_id, generation_id, chunk_index);
+      CREATE INDEX knowledge_chunks_search_idx ON knowledge_chunks USING GIN(search_vector);
+
+      CREATE TABLE knowledge_chunk_embeddings (
+        chunk_id TEXT PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        model_identity TEXT NOT NULL,
+        embedding vector,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+        error_message TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (status <> 'ready' OR embedding IS NOT NULL)
+      );
+      CREATE INDEX knowledge_chunk_embeddings_scope_idx ON knowledge_chunk_embeddings(class_id, model_identity, status);
+
+      CREATE TABLE assistant_configs (
+        class_id TEXT PRIMARY KEY REFERENCES classes(id) ON DELETE CASCADE,
+        system_prompt TEXT NOT NULL CHECK (length(trim(system_prompt)) > 0),
+        guided_solving_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX conversations_owner_idx ON conversations(user_id, class_id, updated_at);
+
+      CREATE TABLE conversation_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'done', 'error')),
+        citations_json TEXT NOT NULL DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX conversation_messages_order_idx ON conversation_messages(conversation_id, created_at, id);
+    `,
+    testSql: `
+      CREATE TABLE access_token_sessions (
+        jti_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX access_token_sessions_user_idx ON access_token_sessions(user_id);
+      CREATE INDEX access_token_sessions_expiry_idx ON access_token_sessions(expires_at);
+      CREATE TABLE knowledge_chunks (
+        id TEXT PRIMARY KEY, generation_id TEXT NOT NULL,
+        knowledge_entry_id TEXT NOT NULL REFERENCES knowledge_entries(id) ON DELETE CASCADE,
+        material_id TEXT NOT NULL, class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        strategy TEXT NOT NULL CHECK (strategy IN ('auto', 'separator', 'markdown_heading')),
+        chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0), chunk_text TEXT NOT NULL,
+        start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,
+        index_status TEXT NOT NULL CHECK (index_status IN ('pending', 'ready', 'failed')),
+        error_message TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (material_id, class_id) REFERENCES materials(id, class_id) ON DELETE CASCADE,
+        UNIQUE (knowledge_entry_id, generation_id, chunk_index)
+      );
+      CREATE INDEX knowledge_chunks_class_status_idx ON knowledge_chunks(class_id, index_status);
+      CREATE INDEX knowledge_chunks_material_generation_idx ON knowledge_chunks(material_id, generation_id, chunk_index);
+      CREATE TABLE knowledge_chunk_embeddings (
+        chunk_id TEXT PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        model_identity TEXT NOT NULL, embedding TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+        error_message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX knowledge_chunk_embeddings_scope_idx ON knowledge_chunk_embeddings(class_id, model_identity, status);
+      CREATE TABLE assistant_configs (
+        class_id TEXT PRIMARY KEY REFERENCES classes(id) ON DELETE CASCADE,
+        system_prompt TEXT NOT NULL, guided_solving_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        version INTEGER NOT NULL DEFAULT 1, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE conversations (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        title TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX conversations_owner_idx ON conversations(user_id, class_id, updated_at);
+      CREATE TABLE conversation_messages (
+        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'done', 'error')),
+        citations_json TEXT NOT NULL DEFAULT '[]', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX conversation_messages_order_idx ON conversation_messages(conversation_id, created_at, id);
+    `,
+  },
 ];

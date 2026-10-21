@@ -29,9 +29,12 @@ export async function seedAccounts(
     const passwordHash = await hashPassword(account.password);
     await database.query(
       `INSERT INTO users
-        (id, account_identifier, password_hash, role, class_id)
+       (id, account_identifier, password_hash, role, class_id)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (account_identifier) DO NOTHING`,
+       ON CONFLICT (account_identifier) DO UPDATE
+       SET password_hash = EXCLUDED.password_hash,
+           role = EXCLUDED.role,
+           class_id = EXCLUDED.class_id`,
       [
         randomUUID(),
         account.accountIdentifier,
@@ -50,6 +53,7 @@ export async function seedCourseData(
   const definitions = [
     {
       id: "seed-material-class-a",
+      entryId: "seed-entry-class-a",
       account: "teacher-a",
       classId: "class-a",
       filename: "class-a-introduction.md",
@@ -58,11 +62,21 @@ export async function seedCourseData(
     },
     {
       id: "seed-material-class-b",
+      entryId: "seed-entry-class-b",
       account: "teacher-b",
       classId: "class-b",
       filename: "class-b-introduction.md",
       storageKey: "seed-class-b.md",
       content: "# Class B introduction\n\nClass B private teaching material.",
+    },
+    {
+      id: "seed-material-class-a-science",
+      entryId: "seed-entry-class-a-science",
+      account: "teacher-a",
+      classId: "class-a",
+      filename: "A班-小学科学课程资料.md",
+      storageKey: "seed-class-a-science.md",
+      content: "# 小学科学课程资料\n\n磁铁能吸引铁钉，不能吸引木块。条形磁铁两端吸力最强，中间较弱。同名磁极互相推开，异名磁极互相靠近。",
     },
   ] as const;
 
@@ -94,7 +108,14 @@ export async function seedCourseData(
         (id, material_id, class_id, content, search_document, sequence_number)
        VALUES ($1, $2, $3, $4, $4, 0)
        ON CONFLICT (id) DO NOTHING`,
-      [`seed-entry-${definition.classId}`, definition.id, definition.classId, definition.content],
+      [definition.entryId, definition.id, definition.classId, definition.content],
+    );
+  }
+  for (const classId of ["class-a", "class-b"]) {
+    await database.query(
+      `INSERT INTO assistant_configs (class_id, system_prompt, guided_solving_enabled)
+       VALUES ($1, $2, TRUE) ON CONFLICT (class_id) DO NOTHING`,
+      [classId, "你是本班课程解题助手。仅依据提供的本班资料回答，并标注引用。"],
     );
   }
 }

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { createAuthenticationGuard, requireTeacher } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import {
+  AccessTokenSessionRepository,
   KnowledgeEntryRepository,
   MaterialRepository,
   RetrievalRepository,
@@ -29,11 +30,17 @@ import {
 } from "./materials/storage.js";
 import { verifyPassword } from "./security/passwords.js";
 import { SessionService } from "./security/sessions.js";
+import { AccessTokenService, bearerToken } from "./security/tokens.js";
 import { loginPage, materialDetailPage, materialsPage } from "./web/pages.js";
 import { HttpEmbeddingProvider, type EmbeddingProvider } from "./retrieval/provider.js";
 import { RetrievalService } from "./retrieval/service.js";
 import { validateSearchInput } from "./retrieval/validation.js";
 import { EmbeddingIndexer } from "./retrieval/indexer.js";
+import { AssistantConfigRepository, ChunkRepository, ConversationRepository } from "./db/assistant-repositories.js";
+import { ChunkIndexer } from "./knowledge/chunk-indexer.js";
+import { ChunkSearchService, SearchUnavailableError } from "./knowledge/search.js";
+import { HttpChatProvider, ChatProviderError, type ChatProvider } from "./assistant/chat-provider.js";
+import { GroundedAnswerService } from "./assistant/grounded-answer.js";
 
 export type BuildAppOptions = {
   config: AppConfig;
@@ -42,6 +49,7 @@ export type BuildAppOptions = {
   materialStorage?: MaterialStorage;
   materialParser?: MaterialParser;
   embeddingProvider?: EmbeddingProvider;
+  chatProvider?: ChatProvider;
 };
 
 const loginSchema = z.object({
@@ -65,6 +73,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     options.config.sessionSecret,
     options.config.sessionTtlSeconds,
   );
+  const accessTokens = new AccessTokenService(
+    new AccessTokenSessionRepository(options.database),
+    {
+      secret: options.config.jwtSecret ?? options.config.sessionSecret,
+      issuer: options.config.jwtIssuer ?? "campusclaw",
+      audience: options.config.jwtAudience ?? "campusclaw-browser",
+      ttlSeconds: options.config.jwtTtlSeconds ?? 3600,
+    },
+  );
   const materials = new MaterialRepository(options.database);
   const entries = new KnowledgeEntryRepository(options.database);
   const retrievalRepository = new RetrievalRepository(options.database);
@@ -82,6 +99,28 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     excerptLength: options.config.searchExcerptLength ?? 240,
   });
   const indexer = new EmbeddingIndexer(entries, retrievalRepository, embeddingProvider);
+  const chunks = new ChunkRepository(options.database);
+  const chunkIndexer = new ChunkIndexer(options.database, chunks, embeddingProvider, {
+    maxChars: options.config.chunkMaxChars ?? 800,
+    overlapChars: options.config.chunkOverlapChars ?? 80,
+  });
+  const chunkSearch = new ChunkSearchService(chunks, embeddingProvider, {
+    threshold: options.config.vectorSimilarityThreshold ?? 0.35,
+    rrfK: options.config.searchRrfK ?? 60,
+  });
+  const assistantConfigs = new AssistantConfigRepository(options.database);
+  const conversations = new ConversationRepository(options.database);
+  const chatProvider = options.chatProvider ?? new HttpChatProvider({
+    endpoint: options.config.chatEndpoint ?? "http://127.0.0.1:11434/v1/chat/completions",
+    apiKey: options.config.chatApiKey,
+    model: options.config.chatModel ?? "campusclaw-chat",
+    timeoutMs: options.config.chatTimeoutMs ?? 30000,
+    maxTokens: options.config.chatMaxTokens ?? 600,
+  });
+  const groundedAnswers = new GroundedAnswerService(chunkSearch, assistantConfigs, chatProvider, {
+    messages: options.config.conversationHistoryMessages ?? 12,
+    chars: options.config.conversationHistoryChars ?? 12000,
+  });
   const materialStorage = options.materialStorage ??
     new FileMaterialStorage(options.config.materialStorageRoot);
   const ingestion = new MaterialIngestionService(
@@ -94,11 +133,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     sessions,
     options.config,
     "api",
+    accessTokens,
   );
   const authenticateBrowser = createAuthenticationGuard(
     sessions,
     options.config,
     "browser",
+    accessTokens,
   );
 
   void app.register(cookie);
@@ -131,6 +172,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       role: user.role,
       classId: user.class_id,
     });
+    const access = await accessTokens.create({ userId: user.id, role: user.role, classId: user.class_id });
     reply.setCookie(options.config.sessionCookieName, session.token, {
       httpOnly: true,
       sameSite: "lax",
@@ -140,6 +182,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     });
     return reply.send({
       user: { id: user.id, role: user.role, classId: user.class_id },
+      accessToken: access.token,
+      tokenType: "Bearer",
+      expiresAt: access.expiresAt.toISOString(),
     });
   });
 
@@ -176,6 +221,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   );
 
   app.post("/api/logout", async (request, reply) => {
+    const token = bearerToken(request.headers.authorization);
+    if (token) await accessTokens.revoke(token);
     await sessions.revoke(request.cookies[options.config.sessionCookieName]);
     reply.clearCookie(options.config.sessionCookieName, {
       httpOnly: true,
@@ -273,9 +320,96 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       void indexer.index(request.sessionIdentity!.classId).catch((error) => {
         app.log.warn({ err: error, operation: "embedding-index" }, "embedding index update failed");
       });
+      void chunkIndexer.indexMaterial({ materialId: material.id, classId: request.sessionIdentity!.classId }).catch((error) => {
+        app.log.warn({ err: error, operation: "chunk-index" }, "chunk index update failed");
+      });
       return reply.status(201).send({ material: publicMaterial(material) });
     },
   );
+
+  const searchSchema = z.object({
+    q: z.string().trim().min(1).max(options.config.searchMaxQueryLength ?? 1000),
+    mode: z.enum(["keyword", "vector", "hybrid"]).default("hybrid"),
+    limit: z.number().int().min(1).max(options.config.searchMaxLimit ?? 50).default(options.config.searchDefaultLimit ?? 10),
+    offset: z.number().int().min(0).max(1000).default(0),
+  });
+
+  app.post<{ Body: unknown }>("/api/search", { preHandler: authenticateApi }, async (request, reply) => {
+    const parsed = searchSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid search query" });
+    try {
+      const result = await chunkSearch.search({ classId: request.sessionIdentity!.classId, ...parsed.data });
+      return { mode: result.mode, hits: result.hits.map((hit, index) => ({
+        rank: index + 1,
+        excerpt: hit.excerpt,
+        scores: { combined: hit.fusedScore, lexicalRank: hit.lexicalRank, vectorRank: hit.vectorRank, lexical: hit.lexicalScore, vector: hit.vectorScore },
+        source: { materialId: hit.materialId, knowledgeEntryId: hit.knowledgeEntryId, chunkId: hit.chunkId, originalFilename: hit.filename, chunkIndex: hit.chunkIndex, startOffset: hit.startOffset, endOffset: hit.endOffset },
+      })) };
+    } catch (error) {
+      if (error instanceof SearchUnavailableError) return reply.status(503).send({ error: "Search unavailable" });
+      throw error;
+    }
+  });
+
+  const askSchema = z.object({
+    q: z.string().trim().min(1).max(options.config.askMaxQuestionLength ?? 2000),
+  });
+  app.post<{ Body: unknown }>("/api/ask", { preHandler: authenticateApi }, async (request, reply) => {
+    const parsed = askSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid question" });
+    try { const result = await groundedAnswers.answer({ identity: request.sessionIdentity!, question: parsed.data.q }); return { answer: result.answer, citations: result.citations }; }
+    catch (error) { if (error instanceof ChatProviderError || error instanceof SearchUnavailableError) return reply.status(503).send({ error: "Assistant unavailable" }); throw error; }
+  });
+
+  app.get("/api/assistant-config", { preHandler: authenticateApi }, async (request) => {
+    const config = await assistantConfigs.get(request.sessionIdentity!.classId);
+    return { systemPrompt: config.system_prompt, guidedSolvingEnabled: config.guided_solving_enabled, version: config.version, editable: request.sessionIdentity!.role === "teacher" };
+  });
+  app.patch<{ Body: unknown }>("/api/assistant-config", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = z.object({ systemPrompt: z.string().trim().min(10).max(4000).optional(), guidedSolvingEnabled: z.boolean().optional() }).refine(value => value.systemPrompt !== undefined || value.guidedSolvingEnabled !== undefined).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid assistant configuration" });
+    const updated = await assistantConfigs.update(request.sessionIdentity!.classId, request.sessionIdentity!.userId, { systemPrompt: parsed.data.systemPrompt, guided: parsed.data.guidedSolvingEnabled });
+    return { systemPrompt: updated.system_prompt, guidedSolvingEnabled: updated.guided_solving_enabled, version: updated.version };
+  });
+
+  app.post<{ Params: { materialId: string }; Body: unknown }>("/api/materials/:materialId/reindex", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const material = await materials.findById(request.params.materialId);
+    if (!material || material.class_id !== request.sessionIdentity!.classId) return reply.status(404).send({ error: "Not Found" });
+    const parsed = z.object({ strategy: z.enum(["auto", "separator", "markdown_heading"]).default("auto"), separator: z.string().max(20).optional(), maxChars: z.number().int().min(100).max(5000).optional(), overlapChars: z.number().int().min(0).max(1000).optional() }).safeParse(request.body ?? {});
+    if (!parsed.success || (parsed.data.maxChars && parsed.data.overlapChars && parsed.data.overlapChars >= parsed.data.maxChars)) return reply.status(400).send({ error: "Invalid chunk strategy" });
+    return chunkIndexer.indexMaterial({ materialId: material.id, classId: material.class_id, ...parsed.data });
+  });
+
+  app.get("/api/conversations", { preHandler: authenticateApi }, async (request) => ({ conversations: await conversations.list(request.sessionIdentity!) }));
+  app.post<{ Body: unknown }>("/api/conversations", { preHandler: authenticateApi }, async (request, reply) => {
+    const parsed = z.object({ title: z.string().trim().min(1).max(120).default("新对话") }).safeParse(request.body ?? {});
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid conversation" });
+    return reply.status(201).send({ conversation: await conversations.create(request.sessionIdentity!, parsed.data.title) });
+  });
+  app.get<{ Params: { conversationId: string } }>("/api/conversations/:conversationId", { preHandler: authenticateApi }, async (request, reply) => {
+    const conversation = await conversations.find(request.params.conversationId, request.sessionIdentity!);
+    if (!conversation) return reply.status(404).send({ error: "Not Found" });
+    return { conversation, messages: await conversations.messages(conversation.id) };
+  });
+  app.post<{ Params: { conversationId: string }; Body: unknown }>("/api/conversations/:conversationId/stream", { preHandler: authenticateApi }, async (request, reply) => {
+    const conversation = await conversations.find(request.params.conversationId, request.sessionIdentity!);
+    if (!conversation) return reply.status(404).send({ error: "Not Found" });
+    const parsed = z.object({ q: z.string().trim().min(1).max(options.config.askMaxQuestionLength ?? 2000) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid question" });
+    const prior = await conversations.messages(conversation.id);
+    await conversations.addMessage(conversation.id, "user", parsed.data.q, "done");
+    const assistantMessageId = await conversations.addMessage(conversation.id, "assistant", "", "pending");
+    reply.hijack(); reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8"); reply.raw.setHeader("cache-control", "no-cache"); reply.raw.setHeader("connection", "keep-alive");
+    const emit = (event: string, data: unknown) => reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    emit("meta", { conversationId: conversation.id, messageId: assistantMessageId });
+    try {
+      const answer = await groundedAnswers.answer({ identity: request.sessionIdentity!, question: parsed.data.q, history: prior.filter((item: any) => item.status === "done").map((item: any) => ({ role: item.role, content: item.content })) });
+      for (const citation of answer.citations) emit("citation", citation);
+      for (const delta of answer.answer.match(/.{1,24}/gs) ?? [answer.answer]) { emit("delta", { text: delta }); }
+      await conversations.completeMessage(assistantMessageId, answer.answer, "done", answer.citations); emit("done", { messageId: assistantMessageId });
+    } catch { await conversations.completeMessage(assistantMessageId, "", "error"); emit("error", { error: "Assistant unavailable" }); }
+    reply.raw.end();
+  });
 
   app.post<{ Body: unknown }>(
     "/api/knowledge-search",
