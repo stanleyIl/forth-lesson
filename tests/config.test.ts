@@ -56,6 +56,21 @@ describe("loadConfig", () => {
       chunkMaxChars: 800,
       chunkOverlapChars: 80,
       vectorSimilarityThreshold: 0.35,
+      aiApplicationMaxPerClass: 20,
+      promptTemplateMaxPerClass: 50,
+      skillMaxPerClass: 50,
+      skillUploadMaxBytes: 131072,
+      skillStorageRoot: "/var/lib/campusclaw/skills",
+      mcpServerName: "campus-tools",
+      mcpServerUrl: "http://127.0.0.1:3100/mcp",
+      mcpConnectTimeoutMs: 5000,
+      mcpCallTimeoutMs: 10000,
+      toolMaxRounds: 1,
+      toolMaxCalls: 2,
+      toolMaxOutputChars: 8000,
+      executionTraceRetentionDays: 30,
+      executionTraceMaxPerClass: 500,
+      executionTracePreviewChars: 2000,
     });
   });
 
@@ -66,6 +81,10 @@ describe("loadConfig", () => {
     ["invalid HTTPS flag", { HTTPS_ENABLED: "sometimes" }],
     ["short session secret", { SESSION_SECRET: "too-short" }],
     ["short JWT secret", { JWT_SECRET: "too-short" }],
+    ["unsafe skill upload limit", { SKILL_UPLOAD_MAX_BYTES: "2000000" }],
+    ["unsafe tool rounds", { TOOL_MAX_ROUNDS: "8" }],
+    ["unsafe trace retention", { EXECUTION_TRACE_RETENTION_DAYS: "1000" }],
+    ["invalid MCP URL", { MCP_SERVER_URL: "not-a-url" }],
   ])("rejects %s", (_description, overrides) => {
     expect(() => loadConfig({ ...validEnvironment, ...overrides })).toThrow(
       ConfigurationError,

@@ -1,8 +1,22 @@
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 
+import { AiApplicationOrchestrator } from "./ai-platform/orchestrator.js";
+import {
+  AiApplicationRepository,
+  ExecutionRepository,
+  McpRepository,
+  PromptTemplateRepository,
+  SkillRepository,
+} from "./ai-platform/repositories.js";
+import { hasSkillAction } from "./ai-platform/actions.js";
+import { parseSkillPackage } from "./ai-platform/skills.js";
+import { renderTemplate, validateTemplate } from "./ai-platform/templates.js";
 import { createAuthenticationGuard, requireTeacher } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import {
@@ -41,6 +55,7 @@ import { ChunkIndexer } from "./knowledge/chunk-indexer.js";
 import { ChunkSearchService, SearchUnavailableError } from "./knowledge/search.js";
 import { HttpChatProvider, ChatProviderError, type ChatProvider } from "./assistant/chat-provider.js";
 import { GroundedAnswerService } from "./assistant/grounded-answer.js";
+import { McpClientService } from "./mcp/client.js";
 
 export type BuildAppOptions = {
   config: AppConfig;
@@ -50,6 +65,7 @@ export type BuildAppOptions = {
   materialParser?: MaterialParser;
   embeddingProvider?: EmbeddingProvider;
   chatProvider?: ChatProvider;
+  mcpClient?: McpClientService;
 };
 
 const loginSchema = z.object({
@@ -110,6 +126,19 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   });
   const assistantConfigs = new AssistantConfigRepository(options.database);
   const conversations = new ConversationRepository(options.database);
+  const promptTemplates = new PromptTemplateRepository(options.database);
+  const skills = new SkillRepository(options.database);
+  const aiApplications = new AiApplicationRepository(options.database);
+  const mcpRepository = new McpRepository(options.database);
+  const executionRepository = new ExecutionRepository(
+    options.database,
+    options.config.executionTracePreviewChars ?? 2000,
+  );
+  const mcpClient = options.mcpClient ?? new McpClientService({
+    connectTimeoutMs: options.config.mcpConnectTimeoutMs ?? 5000,
+    callTimeoutMs: options.config.mcpCallTimeoutMs ?? 10000,
+    maximumOutputCharacters: options.config.toolMaxOutputChars ?? 8000,
+  });
   const chatProvider = options.chatProvider ?? new HttpChatProvider({
     endpoint: options.config.chatEndpoint ?? "http://127.0.0.1:11434/v1/chat/completions",
     apiKey: options.config.chatApiKey,
@@ -121,6 +150,22 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     messages: options.config.conversationHistoryMessages ?? 12,
     chars: options.config.conversationHistoryChars ?? 12000,
   });
+  const aiOrchestrator = new AiApplicationOrchestrator(
+    aiApplications,
+    chunkSearch,
+    chatProvider,
+    mcpClient,
+    executionRepository,
+    {
+      historyMessages: options.config.conversationHistoryMessages ?? 12,
+      historyCharacters: options.config.conversationHistoryChars ?? 12000,
+      maximumToolRounds: options.config.toolMaxRounds ?? 1,
+      maximumToolCalls: options.config.toolMaxCalls ?? 2,
+      maximumToolOutputCharacters: options.config.toolMaxOutputChars ?? 8000,
+      maximumTokens: options.config.chatMaxTokens ?? 600,
+      tracePreviewCharacters: options.config.executionTracePreviewChars ?? 2000,
+    },
+  );
   const materialStorage = options.materialStorage ??
     new FileMaterialStorage(options.config.materialStorageRoot);
   const ingestion = new MaterialIngestionService(
@@ -380,11 +425,258 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return chunkIndexer.indexMaterial({ materialId: material.id, classId: material.class_id, ...parsed.data });
   });
 
+  const applicationInputSchema = z.object({
+    appKey: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/).optional(),
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(500).default(""),
+    promptTemplateVersionId: z.string().uuid().or(z.string().regex(/^seed-/)).nullable(),
+    retrievalMode: z.enum(["none", "keyword", "vector", "hybrid"]),
+    retrievalLimit: z.number().int().min(1).max(10).default(4),
+    evidenceRequired: z.boolean().default(true),
+    enabled: z.boolean().default(true),
+    skillVersionIds: z.array(z.string()).max(20).default([]),
+    toolIds: z.array(z.string()).max(20).default([]),
+  });
+
+  app.get("/api/ai-applications", { preHandler: authenticateApi }, async (request) => {
+    const applications = await aiApplications.list(request.sessionIdentity!.classId, request.sessionIdentity!.role === "teacher");
+    return {
+      applications,
+      ...(request.sessionIdentity!.role === "teacher"
+        ? { contexts: await Promise.all(applications.map((application) => aiApplications.context(application.id, request.sessionIdentity!.classId))) }
+        : {}),
+    };
+  });
+
+  app.post<{ Body: unknown }>("/api/ai-applications", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = applicationInputSchema.required({ appKey: true }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid AI application" });
+    if ((await aiApplications.list(request.sessionIdentity!.classId, true)).length >= (options.config.aiApplicationMaxPerClass ?? 20)) {
+      return reply.status(400).send({ error: "AI application limit reached" });
+    }
+    if (parsed.data.promptTemplateVersionId && !await promptTemplates.getVersion(parsed.data.promptTemplateVersionId, request.sessionIdentity!.classId)) {
+      return reply.status(400).send({ error: "Invalid prompt template version" });
+    }
+    try {
+      await skills.validateVersionIds(request.sessionIdentity!.classId, parsed.data.skillVersionIds);
+      await mcpRepository.validateToolIds(request.sessionIdentity!.classId, parsed.data.toolIds);
+      const application = await aiApplications.create(request.sessionIdentity!, {
+        appKey: parsed.data.appKey,
+        name: parsed.data.name,
+        description: parsed.data.description,
+        promptTemplateVersionId: parsed.data.promptTemplateVersionId,
+        retrievalMode: parsed.data.retrievalMode,
+        retrievalLimit: parsed.data.retrievalLimit,
+        evidenceRequired: parsed.data.evidenceRequired,
+        enabled: parsed.data.enabled,
+      });
+      await skills.replaceBindings(application!.id, request.sessionIdentity!.classId, parsed.data.skillVersionIds);
+      await mcpRepository.replaceBindings(application!.id, request.sessionIdentity!.classId, parsed.data.toolIds);
+      return reply.status(201).send({ application: await aiApplications.context(application!.id, request.sessionIdentity!.classId) });
+    } catch {
+      return reply.status(400).send({ error: "Invalid application bindings" });
+    }
+  });
+
+  app.patch<{ Params: { applicationId: string }; Body: unknown }>("/api/ai-applications/:applicationId", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = applicationInputSchema.omit({ appKey: true }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid AI application" });
+    if (parsed.data.promptTemplateVersionId && !await promptTemplates.getVersion(parsed.data.promptTemplateVersionId, request.sessionIdentity!.classId)) {
+      return reply.status(400).send({ error: "Invalid prompt template version" });
+    }
+    try {
+      await skills.validateVersionIds(request.sessionIdentity!.classId, parsed.data.skillVersionIds);
+      await mcpRepository.validateToolIds(request.sessionIdentity!.classId, parsed.data.toolIds);
+      const application = await aiApplications.update(request.sessionIdentity!, request.params.applicationId, parsed.data);
+      if (!application) return reply.status(404).send({ error: "Not Found" });
+      await skills.replaceBindings(application.id, request.sessionIdentity!.classId, parsed.data.skillVersionIds);
+      await mcpRepository.replaceBindings(application.id, request.sessionIdentity!.classId, parsed.data.toolIds);
+      return { application: await aiApplications.context(application.id, request.sessionIdentity!.classId) };
+    } catch {
+      return reply.status(400).send({ error: "Invalid application bindings" });
+    }
+  });
+
+  const templateSchema = z.object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(500).default(""),
+    body: z.string().trim().min(1).max(12000),
+    variables: z.array(z.string()).max(20),
+  });
+  app.get("/api/prompt-templates", { preHandler: authenticateApi }, async (request) => ({
+    templates: await promptTemplates.list(request.sessionIdentity!.classId),
+    versions: await promptTemplates.listVersions(request.sessionIdentity!.classId),
+  }));
+  app.post<{ Body: unknown }>("/api/prompt-templates", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = templateSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid prompt template" });
+    if ((await promptTemplates.list(request.sessionIdentity!.classId)).length >= (options.config.promptTemplateMaxPerClass ?? 50)) {
+      return reply.status(400).send({ error: "Prompt template limit reached" });
+    }
+    try {
+      const variables = validateTemplate(parsed.data.body, parsed.data.variables);
+      return reply.status(201).send({ template: await promptTemplates.create(request.sessionIdentity!, { ...parsed.data, variables }) });
+    } catch {
+      return reply.status(400).send({ error: "Invalid prompt template" });
+    }
+  });
+  app.post<{ Params: { templateId: string }; Body: unknown }>("/api/prompt-templates/:templateId/versions", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = templateSchema.omit({ name: true }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid prompt template" });
+    try {
+      const variables = validateTemplate(parsed.data.body, parsed.data.variables);
+      const version = await promptTemplates.addVersion(request.sessionIdentity!, request.params.templateId, { ...parsed.data, variables });
+      return version ? { template: version } : reply.status(404).send({ error: "Not Found" });
+    } catch {
+      return reply.status(400).send({ error: "Invalid prompt template" });
+    }
+  });
+  app.post<{ Body: unknown }>("/api/prompt-templates/preview", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = z.object({
+      body: z.string().trim().min(1).max(12000),
+      variables: z.array(z.string()).max(20),
+      values: z.record(z.string(), z.string().max(12000)),
+    }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid prompt preview" });
+    try {
+      return { rendered: renderTemplate(parsed.data.body, parsed.data.variables, parsed.data.values) };
+    } catch {
+      return reply.status(400).send({ error: "Invalid prompt preview" });
+    }
+  });
+  app.patch<{ Params: { templateId: string }; Body: unknown }>("/api/prompt-templates/:templateId", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid prompt template" });
+    return await promptTemplates.setEnabled(request.params.templateId, request.sessionIdentity!.classId, parsed.data.enabled)
+      ? { ok: true } : reply.status(404).send({ error: "Not Found" });
+  });
+
+  app.get("/api/skills", { preHandler: authenticateApi }, async (request) => ({
+    skills: await skills.list(request.sessionIdentity!.classId),
+  }));
+  app.post("/api/skills/upload", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    if ((await skills.list(request.sessionIdentity!.classId)).length >= (options.config.skillMaxPerClass ?? 50)) {
+      return reply.status(400).send({ error: "Skill limit reached" });
+    }
+    const file = await request.file();
+    if (!file) return reply.status(400).send({ error: "SKILL.md is required" });
+    let parsed;
+    let bytes: Buffer;
+    try {
+      bytes = await file.toBuffer();
+      parsed = parseSkillPackage(file.filename, bytes, options.config.skillUploadMaxBytes ?? 131072);
+      if (parsed.type === "server_action" && (!parsed.actionName || !hasSkillAction(parsed.actionName))) {
+        return reply.status(400).send({ error: "Unknown server action" });
+      }
+    } catch {
+      return reply.status(400).send({ error: "Invalid SKILL.md" });
+    }
+    const root = options.config.skillStorageRoot ?? path.join(options.config.materialStorageRoot, "skills");
+    const directory = path.join(root, request.sessionIdentity!.classId, parsed.skillKey, parsed.semanticVersion);
+    const destination = path.join(directory, "SKILL.md");
+    const temporaryDirectory = path.join(root, ".tmp", randomUUID());
+    const temporaryFile = path.join(temporaryDirectory, "SKILL.md");
+    try {
+      await mkdir(temporaryDirectory, { recursive: true });
+      await writeFile(temporaryFile, bytes, { flag: "wx", mode: 0o600 });
+      const result = await skills.createVersion(request.sessionIdentity!, { ...parsed, origin: "uploaded" });
+      await mkdir(path.dirname(directory), { recursive: true });
+      await rename(temporaryDirectory, directory);
+      return reply.status(201).send({ skill: result });
+    } catch {
+      await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+      return reply.status(400).send({ error: "Skill version already exists or is invalid" });
+    }
+  });
+  app.patch<{ Params: { skillId: string }; Body: unknown }>("/api/skills/:skillId", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid skill" });
+    return await skills.setEnabled(request.params.skillId, request.sessionIdentity!.classId, parsed.data.enabled)
+      ? { ok: true } : reply.status(404).send({ error: "Not Found" });
+  });
+
+  app.get("/api/mcp/servers", { preHandler: [authenticateApi, requireTeacher] }, async (request) => ({
+    servers: await mcpRepository.listServers(request.sessionIdentity!.classId),
+    tools: await mcpRepository.listTools(request.sessionIdentity!.classId),
+  }));
+  app.post("/api/mcp/refresh", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const classId = request.sessionIdentity!.classId;
+    const serverKey = options.config.mcpServerName ?? "campus-tools";
+    const endpoint = options.config.mcpServerUrl ?? "http://127.0.0.1:3100/mcp";
+    const serverId = await mcpRepository.ensureServer(classId, serverKey, "CampusClaw 本地工具", endpoint);
+    try {
+      const discovered = await mcpClient.discover(endpoint);
+      await mcpRepository.replaceTools(serverId, classId, serverKey, discovered);
+      return { tools: await mcpRepository.listTools(classId) };
+    } catch {
+      await mcpRepository.markFailure(serverId, classId, "MCP discovery unavailable");
+      return reply.status(503).send({ error: "MCP discovery unavailable" });
+    }
+  });
+
+  app.get("/api/executions", { preHandler: [authenticateApi, requireTeacher] }, async (request) => ({
+    executions: await executionRepository.list(request.sessionIdentity!.classId),
+  }));
+  app.get<{ Params: { executionId: string } }>("/api/executions/:executionId", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const execution = await executionRepository.detail(request.params.executionId, request.sessionIdentity!.classId);
+    return execution ? { execution } : reply.status(404).send({ error: "Not Found" });
+  });
+  app.get<{ Params: { executionId: string } }>("/api/executions/:executionId/export", { preHandler: [authenticateApi, requireTeacher] }, async (request, reply) => {
+    const execution = await executionRepository.detail(request.params.executionId, request.sessionIdentity!.classId);
+    if (!execution) return reply.status(404).send({ error: "Not Found" });
+    const steps = execution.steps as Array<{ step_type: string; summary: string; details: unknown }>;
+    const {
+      user_id: _userId,
+      class_id: _classId,
+      conversation_id: _conversationId,
+      message_id: _messageId,
+      ...safeExecution
+    } = execution;
+    return {
+      repository: "https://github.com/stanleyIl/forth-lesson",
+      execution: safeExecution,
+      assignmentAnswers: {
+        modelRequestAndResponse: steps.filter((step) => step.step_type.startsWith("provider_")),
+        promptTemplateIncluded: steps.find((step) => step.step_type === "prompt") ?? null,
+        selectedKnowledgeInsteadOfFullDatabase: steps.find((step) => step.step_type === "retrieval") ?? null,
+        boundSkillContributionAndExecution: steps.filter((step) => step.step_type === "skill_action" || step.step_type === "prompt"),
+        mcpParametersAndResults: steps.filter((step) => step.step_type === "mcp_call" || step.step_type === "mcp_result"),
+      },
+    };
+  });
+  app.post("/api/executions/cleanup", { preHandler: [authenticateApi, requireTeacher] }, async (request) => {
+    await executionRepository.cleanup(
+      request.sessionIdentity!.classId,
+      options.config.executionTraceRetentionDays ?? 30,
+      options.config.executionTraceMaxPerClass ?? 500,
+    );
+    return { ok: true };
+  });
+
+  app.post<{ Params: { applicationId: string }; Body: unknown }>("/api/ai-applications/:applicationId/ask", { preHandler: authenticateApi }, async (request, reply) => {
+    const parsed = z.object({ q: z.string().trim().min(1).max(options.config.askMaxQuestionLength ?? 2000) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid question" });
+    try {
+      const result = await aiOrchestrator.answer({
+        identity: request.sessionIdentity!,
+        applicationId: request.params.applicationId,
+        question: parsed.data.q,
+      });
+      return result ? result : reply.status(404).send({ error: "Not Found" });
+    } catch {
+      return reply.status(503).send({ error: "Assistant unavailable" });
+    }
+  });
+
   app.get("/api/conversations", { preHandler: authenticateApi }, async (request) => ({ conversations: await conversations.list(request.sessionIdentity!) }));
   app.post<{ Body: unknown }>("/api/conversations", { preHandler: authenticateApi }, async (request, reply) => {
-    const parsed = z.object({ title: z.string().trim().min(1).max(120).default("新对话") }).safeParse(request.body ?? {});
+    const parsed = z.object({ title: z.string().trim().min(1).max(120).default("新对话"), applicationId: z.string().optional() }).safeParse(request.body ?? {});
     if (!parsed.success) return reply.status(400).send({ error: "Invalid conversation" });
-    return reply.status(201).send({ conversation: await conversations.create(request.sessionIdentity!, parsed.data.title) });
+    const application = parsed.data.applicationId
+      ? await aiApplications.find(parsed.data.applicationId, request.sessionIdentity!.classId)
+      : await aiApplications.findByKey(request.sessionIdentity!.classId, "class-knowledge-assistant");
+    if (parsed.data.applicationId && !application) return reply.status(404).send({ error: "Not Found" });
+    return reply.status(201).send({ conversation: await conversations.create(request.sessionIdentity!, parsed.data.title, application?.id) });
   });
   app.get<{ Params: { conversationId: string } }>("/api/conversations/:conversationId", { preHandler: authenticateApi }, async (request, reply) => {
     const conversation = await conversations.find(request.params.conversationId, request.sessionIdentity!);
@@ -399,14 +691,30 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const prior = await conversations.messages(conversation.id);
     await conversations.addMessage(conversation.id, "user", parsed.data.q, "done");
     const assistantMessageId = await conversations.addMessage(conversation.id, "assistant", "", "pending");
+    const controller = new AbortController();
+    request.raw.on("aborted", () => controller.abort());
+    reply.raw.on("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
     reply.hijack(); reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8"); reply.raw.setHeader("cache-control", "no-cache"); reply.raw.setHeader("connection", "keep-alive");
     const emit = (event: string, data: unknown) => reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     emit("meta", { conversationId: conversation.id, messageId: assistantMessageId });
     try {
-      const answer = await groundedAnswers.answer({ identity: request.sessionIdentity!, question: parsed.data.q, history: prior.filter((item: any) => item.status === "done").map((item: any) => ({ role: item.role, content: item.content })) });
+      const history = prior.filter((item: any) => item.status === "done").map((item: any) => ({ role: item.role, content: item.content }));
+      const answer = conversation.ai_application_id
+        ? await aiOrchestrator.answer({
+            identity: request.sessionIdentity!,
+            applicationId: conversation.ai_application_id,
+            question: parsed.data.q,
+            history,
+            conversationId: conversation.id,
+            messageId: assistantMessageId,
+            emit: (event, data) => emit(event, data),
+            signal: controller.signal,
+          })
+        : await groundedAnswers.answer({ identity: request.sessionIdentity!, question: parsed.data.q, history });
+      if (!answer) throw new Error("Application not found");
       for (const citation of answer.citations) emit("citation", citation);
       for (const delta of answer.answer.match(/.{1,24}/gs) ?? [answer.answer]) { emit("delta", { text: delta }); }
-      await conversations.completeMessage(assistantMessageId, answer.answer, "done", answer.citations); emit("done", { messageId: assistantMessageId });
+      await conversations.completeMessage(assistantMessageId, answer.answer, "done", answer.citations); emit("done", { messageId: assistantMessageId, executionId: "executionId" in answer ? answer.executionId : undefined });
     } catch { await conversations.completeMessage(assistantMessageId, "", "error"); emit("error", { error: "Assistant unavailable" }); }
     reply.raw.end();
   });

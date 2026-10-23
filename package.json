@@ -10,6 +10,8 @@
     "db:seed": "tsx src/db/seed.ts",
     "db:backfill-embeddings": "tsx src/retrieval/backfill.ts",
     "db:backfill-chunks": "tsx src/knowledge/backfill.ts",
+    "mcp:start": "node dist/mcp/server.js",
+    "report:lesson6": ".venv/bin/python scripts/generate-lesson6-report.py",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run --passWithNoTests",
@@ -19,8 +21,12 @@
   "author": "",
   "license": "MIT",
   "type": "module",
+  "overrides": {
+    "source-map-js": "1.2.2"
+  },
   "devDependencies": {
     "@fission-ai/openspec": "^1.13.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.2",
     "@types/pg": "^8.23.1",
     "@types/sanitize-html": "^2.16.1",
@@ -32,12 +38,15 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^10.1.2",
-    "fastify": "^5.12.5",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ajv": "^8.20.0",
+    "fastify": "^5.12.7",
     "jose": "^6.2.12",
     "marked": "^18.0.14",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
-    "sanitize-html": "^2.17.7",
+    "sanitize-html": "^2.18.1",
+    "yaml": "^2.9.1",
     "zod": "^4.6.5"
   }
 }

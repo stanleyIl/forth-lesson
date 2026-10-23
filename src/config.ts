@@ -70,6 +70,21 @@ const environmentSchema = z.object({
   CHUNK_MAX_CHARS: positiveIntegerFromString("800").pipe(z.number().min(100).max(5000)),
   CHUNK_OVERLAP_CHARS: z.string().regex(/^\d+$/).default("80").transform(Number).pipe(z.number().int().min(0).max(1000)),
   VECTOR_SIMILARITY_THRESHOLD: boundedNumberFromString("0.35", 0, 1),
+  AI_APPLICATION_MAX_PER_CLASS: positiveIntegerFromString("20").pipe(z.number().max(100)),
+  PROMPT_TEMPLATE_MAX_PER_CLASS: positiveIntegerFromString("50").pipe(z.number().max(500)),
+  SKILL_MAX_PER_CLASS: positiveIntegerFromString("50").pipe(z.number().max(500)),
+  SKILL_UPLOAD_MAX_BYTES: positiveIntegerFromString("131072").pipe(z.number().max(1048576)),
+  SKILL_STORAGE_ROOT: z.string().min(1).default("/var/lib/campusclaw/skills"),
+  MCP_SERVER_NAME: z.string().regex(/^[a-z0-9-]+$/).default("campus-tools"),
+  MCP_SERVER_URL: z.string().url().default("http://127.0.0.1:3100/mcp"),
+  MCP_CONNECT_TIMEOUT_MS: positiveIntegerFromString("5000").pipe(z.number().max(60000)),
+  MCP_CALL_TIMEOUT_MS: positiveIntegerFromString("10000").pipe(z.number().max(120000)),
+  TOOL_MAX_ROUNDS: positiveIntegerFromString("1").pipe(z.number().max(3)),
+  TOOL_MAX_CALLS: positiveIntegerFromString("2").pipe(z.number().max(8)),
+  TOOL_MAX_OUTPUT_CHARS: positiveIntegerFromString("8000").pipe(z.number().max(50000)),
+  EXECUTION_TRACE_RETENTION_DAYS: positiveIntegerFromString("30").pipe(z.number().max(365)),
+  EXECUTION_TRACE_MAX_PER_CLASS: positiveIntegerFromString("500").pipe(z.number().max(10000)),
+  EXECUTION_TRACE_PREVIEW_CHARS: positiveIntegerFromString("2000").pipe(z.number().max(10000)),
 });
 
 export type AppConfig = {
@@ -110,6 +125,21 @@ export type AppConfig = {
   chunkMaxChars: number;
   chunkOverlapChars: number;
   vectorSimilarityThreshold: number;
+  aiApplicationMaxPerClass?: number;
+  promptTemplateMaxPerClass?: number;
+  skillMaxPerClass?: number;
+  skillUploadMaxBytes?: number;
+  skillStorageRoot?: string;
+  mcpServerName?: string;
+  mcpServerUrl?: string;
+  mcpConnectTimeoutMs?: number;
+  mcpCallTimeoutMs?: number;
+  toolMaxRounds?: number;
+  toolMaxCalls?: number;
+  toolMaxOutputChars?: number;
+  executionTraceRetentionDays?: number;
+  executionTraceMaxPerClass?: number;
+  executionTracePreviewChars?: number;
 };
 
 export class ConfigurationError extends Error {
@@ -173,5 +203,20 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     chunkMaxChars: parsed.data.CHUNK_MAX_CHARS,
     chunkOverlapChars: parsed.data.CHUNK_OVERLAP_CHARS,
     vectorSimilarityThreshold: parsed.data.VECTOR_SIMILARITY_THRESHOLD,
+    aiApplicationMaxPerClass: parsed.data.AI_APPLICATION_MAX_PER_CLASS,
+    promptTemplateMaxPerClass: parsed.data.PROMPT_TEMPLATE_MAX_PER_CLASS,
+    skillMaxPerClass: parsed.data.SKILL_MAX_PER_CLASS,
+    skillUploadMaxBytes: parsed.data.SKILL_UPLOAD_MAX_BYTES,
+    skillStorageRoot: parsed.data.SKILL_STORAGE_ROOT,
+    mcpServerName: parsed.data.MCP_SERVER_NAME,
+    mcpServerUrl: parsed.data.MCP_SERVER_URL,
+    mcpConnectTimeoutMs: parsed.data.MCP_CONNECT_TIMEOUT_MS,
+    mcpCallTimeoutMs: parsed.data.MCP_CALL_TIMEOUT_MS,
+    toolMaxRounds: parsed.data.TOOL_MAX_ROUNDS,
+    toolMaxCalls: parsed.data.TOOL_MAX_CALLS,
+    toolMaxOutputChars: parsed.data.TOOL_MAX_OUTPUT_CHARS,
+    executionTraceRetentionDays: parsed.data.EXECUTION_TRACE_RETENTION_DAYS,
+    executionTraceMaxPerClass: parsed.data.EXECUTION_TRACE_MAX_PER_CLASS,
+    executionTracePreviewChars: parsed.data.EXECUTION_TRACE_PREVIEW_CHARS,
   };
 }

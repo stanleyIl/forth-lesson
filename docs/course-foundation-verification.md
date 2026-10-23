@@ -7,7 +7,7 @@ Date: September 23, 2026
 ```bash
 npm test
 npm run build
-npx openspec validate complete-course-foundation-experience --strict
+npx openspec validate --specs
 ```
 
 The suite covers authentication, session revocation, server-side class isolation, teacher/student permissions, upload validation and rollback, protected download, identical cross-class/missing 404 responses, safe Markdown, browser feature markers, retrieval fusion/fallback, logging redaction, migrations, and embedding lifecycle.

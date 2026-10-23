@@ -13,6 +13,24 @@ services:
     volumes:
       - database_data:/var/lib/postgresql/data
 
+  mcp-server:
+    build:
+      context: .
+    command: ["node", "dist/mcp/server.js"]
+    environment:
+      MCP_PORT: 3100
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   application:
     build:
       context: .
@@ -50,11 +68,28 @@ services:
       CHUNK_MAX_CHARS: ${CHUNK_MAX_CHARS:-800}
       CHUNK_OVERLAP_CHARS: ${CHUNK_OVERLAP_CHARS:-80}
       VECTOR_SIMILARITY_THRESHOLD: ${VECTOR_SIMILARITY_THRESHOLD:-0.35}
+      AI_APPLICATION_MAX_PER_CLASS: ${AI_APPLICATION_MAX_PER_CLASS:-20}
+      PROMPT_TEMPLATE_MAX_PER_CLASS: ${PROMPT_TEMPLATE_MAX_PER_CLASS:-50}
+      SKILL_MAX_PER_CLASS: ${SKILL_MAX_PER_CLASS:-50}
+      SKILL_UPLOAD_MAX_BYTES: ${SKILL_UPLOAD_MAX_BYTES:-131072}
+      SKILL_STORAGE_ROOT: /var/lib/campusclaw/skills
+      MCP_SERVER_NAME: ${MCP_SERVER_NAME:-campus-tools}
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://mcp-server:3100/mcp}
+      MCP_CONNECT_TIMEOUT_MS: ${MCP_CONNECT_TIMEOUT_MS:-5000}
+      MCP_CALL_TIMEOUT_MS: ${MCP_CALL_TIMEOUT_MS:-10000}
+      TOOL_MAX_ROUNDS: ${TOOL_MAX_ROUNDS:-1}
+      TOOL_MAX_CALLS: ${TOOL_MAX_CALLS:-2}
+      TOOL_MAX_OUTPUT_CHARS: ${TOOL_MAX_OUTPUT_CHARS:-8000}
+      EXECUTION_TRACE_RETENTION_DAYS: ${EXECUTION_TRACE_RETENTION_DAYS:-30}
+      EXECUTION_TRACE_MAX_PER_CLASS: ${EXECUTION_TRACE_MAX_PER_CLASS:-500}
+      EXECUTION_TRACE_PREVIEW_CHARS: ${EXECUTION_TRACE_PREVIEW_CHARS:-2000}
       MATERIAL_STORAGE_ROOT: /var/lib/campusclaw/materials
       HOST: 0.0.0.0
       PORT: 3000
     depends_on:
       database:
+        condition: service_healthy
+      mcp-server:
         condition: service_healthy
     ports:
       - "${APP_PORT:-3000}:3000"
@@ -71,7 +106,9 @@ services:
       retries: 20
     volumes:
       - material_data:/var/lib/campusclaw/materials
+      - skill_data:/var/lib/campusclaw/skills
 
 volumes:
   database_data:
   material_data:
+  skill_data:

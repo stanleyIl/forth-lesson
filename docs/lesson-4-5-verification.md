@@ -9,7 +9,7 @@
 ```bash
 npm test
 npm run build
-npx openspec validate add-jwt-rag-streaming-assistant --strict
+npx openspec validate --specs
 ```
 
 Docker Compose 验收使用本地 OpenAI-compatible 假服务，避免把真实 provider key 写入仓库：
