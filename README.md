@@ -2,6 +2,17 @@
 
 CampusClaw 是一个按班级隔离的教学材料与可追溯知识库系统。教师和学生可以使用服务端 Session Cookie 或 JWT Bearer 登录；教师管理本班 `.txt`/`.md` 材料，学生浏览、下载、检索并向本班知识库提问。所有角色和班级判断均由服务端完成。
 
+## 第六课提交材料
+
+本次阶段性验收使用真实外部模型接口 `glm-5.3-flash`，完成知识库问答、上传 Skill、Skill 动作执行和 MCP 工具调用。知识助手采用关键词检索，只传入命中的本班片段。应用运行时直接连接模型网关，密钥保存在本机 `.env`，不随仓库提交。
+
+- [PDF 报告](output/pdf/campusclaw-lesson-6-report.pdf)：9 页，包含 14 张前后端验证截图及五个问题的回答。
+- [Word 原稿](output/docx/campusclaw-lesson-6-report.docx)：宋体黑字，可继续编辑。
+- [原始截图包](output/lesson6-screenshots.zip)：保留网页、实际后端请求和响应的浏览器截图。
+- [完整验证记录](docs/evidence/lesson6-real-model/README.md)：模型 HTTP 请求与响应、应用执行记录、认证和班级隔离结果。
+
+重新制作 Word 原稿需要在工作区 Python 环境安装 `scripts/requirements-report.txt`，然后运行 `npm run report:lesson6`。PDF 从 Word 原稿通过 Word/WPS 导出。自动化测试中的 mock 用于隔离外部依赖；本次提交目录中的模型调用证据来自真实网关。
+
 ## 已实现范围
 
 - 教师/学生账号密码登录、JWT Bearer、`GET /api/me` 身份恢复和服务端登出
